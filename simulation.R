@@ -12,6 +12,7 @@ scenarios = list(
   imbalanced    = function(...) simulate_imbalanced_offset(n = n, p = p, ...),
   heterogeneous = function(...) simulate_heterogeneous_offset(n = n, p = p, ...)
 )
+transformations = c('log', 'box-cox')
 
 # plot_fitted(), same scale for straightforward comparison
 plot_fitted_shared = function(y, post_y, xlim, ylim, main){
@@ -36,12 +37,12 @@ ppc_zeros_shared = function(post_pred, obs_y, xlim, main){
   abline(v = mean(obs_y == 0), lwd = 4, col = 'blue')
 }
 
-fit_pair = function(y, X, offset){
+fit_pair = function(y, X, offset, transformation){
   y_on = set_offset(y, offset)
-  fit_false = bart_star(y = y, X = X, offset = FALSE, transformation = 'log',
+  fit_false = bart_star(y = y, X = X, offset = FALSE, transformation = transformation,
                         n.trees = n.trees, nburn = nburn, nsave = nsave, nskip = 0,
                         save_y_hat = TRUE, verbose = FALSE)
-  fit_true  = bart_star(y = y_on, X = X, offset = TRUE, transformation = 'log',
+  fit_true  = bart_star(y = y_on, X = X, offset = TRUE, transformation = transformation,
                         n.trees = n.trees, nburn = nburn, nsave = nsave, nskip = 0,
                         save_y_hat = TRUE, verbose = FALSE)
   list(`FALSE` = fit_false, `TRUE` = fit_true)
@@ -51,62 +52,67 @@ results_i  = data.frame() # (i) offset should help
 results_ii = data.frame() # (ii) offset should be a no-op
 zoom_lim = list(friedman = c(0, 60))
 
-for(name in names(scenarios)){
-  gen = scenarios[[name]]
-  
-  #--------------------------------------------------------------------
-  # (i) Data WITH offset heterogeneity
-  #--------------------------------------------------------------------
-  cat('\n===', name, ': (i) data WITH offset ===\n')
-  dat_i = gen(offset_range = c(0.5, 5), seed = 1)
-  fits_i = fit_pair(dat_i$y, dat_i$X, dat_i$offset)
-  
-  results_i = rbind(results_i, data.frame(
-    scenario = name,
-    offset = c('FALSE', 'TRUE'),
-    WAIC = c(fits_i[['FALSE']]$WAIC, fits_i[['TRUE']]$WAIC),
-    RMSE_to_truth = c(sqrt(mean((fits_i[['FALSE']]$fitted.values - dat_i$Ey_obs)^2)),
-                      sqrt(mean((fits_i[['TRUE']]$fitted.values  - dat_i$Ey_obs)^2))),
-    prop_zero_obs = mean(dat_i$y == 0)
-  ))
-  
-  lim_i = shared_lim(dat_i$Ey_obs, fits_i[['FALSE']]$post.fitted.values,
-                     dat_i$Ey_obs, fits_i[['TRUE']]$post.fitted.values)
-  if(!is.null(zoom_lim[[name]])) lim_i = zoom_lim[[name]]
-  plot_fitted_shared(dat_i$Ey_obs, fits_i[['FALSE']]$post.fitted.values, lim_i, lim_i,
-                     main = paste0(name, ' (i): bart_star(offset = FALSE)'))
-  plot_fitted_shared(dat_i$Ey_obs, fits_i[['TRUE']]$post.fitted.values, lim_i, lim_i,
-                     main = paste0(name, ' (i): bart_star(offset = TRUE)'))
-  
-  hist_lim_i = range(apply(fits_i[['FALSE']]$post.pred, 1, function(x) mean(x == 0)),
-                     apply(fits_i[['TRUE']]$post.pred, 1, function(x) mean(x == 0)),
-                     mean(dat_i$y == 0))
-  ppc_zeros_shared(fits_i[['FALSE']]$post.pred, dat_i$y, hist_lim_i,
-                   main = paste0(name, ' (i) offset=FALSE: PPC prop. zeros'))
-  ppc_zeros_shared(fits_i[['TRUE']]$post.pred, dat_i$y, hist_lim_i,
-                   main = paste0(name, ' (i) offset=TRUE: PPC prop. zeros'))
-  
-  #--------------------------------------------------------------------
-  # (ii) Data WITHOUT offset (e = 1 for all)
-  #--------------------------------------------------------------------
-  cat('\n===', name, ': (ii) data WITHOUT offset ===\n')
-  dat_ii = gen(offset = rep(1, n), seed = 2)
-  fits_ii = fit_pair(dat_ii$y, dat_ii$X, dat_ii$offset)
-  
-  results_ii = rbind(results_ii, data.frame(
-    scenario = name,
-    WAIC_FALSE = fits_ii[['FALSE']]$WAIC, WAIC_TRUE = fits_ii[['TRUE']]$WAIC,
-    RMSE_between = sqrt(mean((fits_ii[['FALSE']]$fitted.values - fits_ii[['TRUE']]$fitted.values)^2)),
-    cor_fitted = cor(fits_ii[['FALSE']]$fitted.values, fits_ii[['TRUE']]$fitted.values)
-  ))
-  
-  lim_ii = shared_lim(dat_ii$Ey, fits_ii[['FALSE']]$post.fitted.values,
-                      dat_ii$Ey, fits_ii[['TRUE']]$post.fitted.values)
-  if(!is.null(zoom_lim[[name]])) lim_ii = zoom_lim[[name]]
-  plot_fitted_shared(dat_ii$Ey, fits_ii[['FALSE']]$post.fitted.values, lim_ii, lim_ii,
-                     main = paste0(name, ' (ii): bart_star(offset = FALSE)'))
-  plot_fitted_shared(dat_ii$Ey, fits_ii[['TRUE']]$post.fitted.values, lim_ii, lim_ii,
-                     main = paste0(name, ' (ii): bart_star(offset = TRUE)'))
+for(transformation in transformations){
+  for(name in names(scenarios)){
+    gen = scenarios[[name]]
+    tag = paste0(name, ' [', transformation, ']')
+    
+    #--------------------------------------------------------------------
+    # (i) Data WITH offset heterogeneity
+    #--------------------------------------------------------------------
+    cat('\n===', tag, ': (i) data WITH offset ===\n')
+    dat_i = gen(offset_range = c(0.5, 5), seed = 1)
+    fits_i = fit_pair(dat_i$y, dat_i$X, dat_i$offset, transformation)
+    
+    results_i = rbind(results_i, data.frame(
+      scenario = name,
+      transformation = transformation,
+      offset = c('FALSE', 'TRUE'),
+      WAIC = c(fits_i[['FALSE']]$WAIC, fits_i[['TRUE']]$WAIC),
+      RMSE_to_truth = c(sqrt(mean((fits_i[['FALSE']]$fitted.values - dat_i$Ey_obs)^2)),
+                        sqrt(mean((fits_i[['TRUE']]$fitted.values  - dat_i$Ey_obs)^2))),
+      prop_zero_obs = mean(dat_i$y == 0)
+    ))
+    
+    lim_i = shared_lim(dat_i$Ey_obs, fits_i[['FALSE']]$post.fitted.values,
+                       dat_i$Ey_obs, fits_i[['TRUE']]$post.fitted.values)
+    if(!is.null(zoom_lim[[name]])) lim_i = zoom_lim[[name]]
+    plot_fitted_shared(dat_i$Ey_obs, fits_i[['FALSE']]$post.fitted.values, lim_i, lim_i,
+                       main = paste0(tag, ' (i): bart_star(offset = FALSE)'))
+    plot_fitted_shared(dat_i$Ey_obs, fits_i[['TRUE']]$post.fitted.values, lim_i, lim_i,
+                       main = paste0(tag, ' (i): bart_star(offset = TRUE)'))
+    
+    hist_lim_i = range(apply(fits_i[['FALSE']]$post.pred, 1, function(x) mean(x == 0)),
+                       apply(fits_i[['TRUE']]$post.pred, 1, function(x) mean(x == 0)),
+                       mean(dat_i$y == 0))
+    ppc_zeros_shared(fits_i[['FALSE']]$post.pred, dat_i$y, hist_lim_i,
+                     main = paste0(tag, ' (i) offset=FALSE: PPC prop. zeros'))
+    ppc_zeros_shared(fits_i[['TRUE']]$post.pred, dat_i$y, hist_lim_i,
+                     main = paste0(tag, ' (i) offset=TRUE: PPC prop. zeros'))
+    
+    #--------------------------------------------------------------------
+    # (ii) Data WITHOUT offset (e = 1 for all)
+    #--------------------------------------------------------------------
+    cat('\n===', tag, ': (ii) data WITHOUT offset ===\n')
+    dat_ii = gen(offset = rep(1, n), seed = 2)
+    fits_ii = fit_pair(dat_ii$y, dat_ii$X, dat_ii$offset, transformation)
+    
+    results_ii = rbind(results_ii, data.frame(
+      scenario = name,
+      transformation = transformation,
+      WAIC_FALSE = fits_ii[['FALSE']]$WAIC, WAIC_TRUE = fits_ii[['TRUE']]$WAIC,
+      RMSE_between = sqrt(mean((fits_ii[['FALSE']]$fitted.values - fits_ii[['TRUE']]$fitted.values)^2)),
+      cor_fitted = cor(fits_ii[['FALSE']]$fitted.values, fits_ii[['TRUE']]$fitted.values)
+    ))
+    
+    lim_ii = shared_lim(dat_ii$Ey, fits_ii[['FALSE']]$post.fitted.values,
+                        dat_ii$Ey, fits_ii[['TRUE']]$post.fitted.values)
+    if(!is.null(zoom_lim[[name]])) lim_ii = zoom_lim[[name]]
+    plot_fitted_shared(dat_ii$Ey, fits_ii[['FALSE']]$post.fitted.values, lim_ii, lim_ii,
+                       main = paste0(tag, ' (ii): bart_star(offset = FALSE)'))
+    plot_fitted_shared(dat_ii$Ey, fits_ii[['TRUE']]$post.fitted.values, lim_ii, lim_ii,
+                       main = paste0(tag, ' (ii): bart_star(offset = TRUE)'))
+  }
 }
 
 cat('\n--- (i) offset = TRUE should help: WAIC / RMSE to truth ---\n')
