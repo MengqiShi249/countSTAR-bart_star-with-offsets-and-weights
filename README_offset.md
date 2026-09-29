@@ -1,91 +1,216 @@
-# countSTAR: `bart_star` with offsets and weights
-This repository extends `bart_star()` from the ['countSTAR'](https://github.com/bking124/countSTAR) package to support **model offsets** and, eventually **regression weights** (later work), for count-valued BART regression. The motivating application is national density and distribution modelling for Canadian birds, but the extension is general to any STAR model with a known, mechanistic exposure term.
+# countSTAR: `bart_star()` with offsets
+
+This repository extends `bart_star()` from the [countSTAR](https://github.com/bking124/countSTAR) package to support **model offsets** (exposures) for count-valued BART regression. **Regression weights** are later work and are documented separately in `README_weight.md`. The motivating application is national density and distribution modelling for Canadian birds, but the extension applies to any STAR model with a known, mechanistic exposure term.
 
 ## Motivation
 
-`bart_star()` fits a **S**imultaneous **T**ransformation **A**nd **R**ounding (STAR) model with a Bayesian Additive Regression Trees (BART) latent mean, via `dbarts`. It is attractive for ecological count data because it captures strong nonlinearities and covariate interactions (e.g. thresholds in temperature, elevation, and proximity to water) that GLMs/GAMs miss, while still returning calibrated posterior uncertainty for predictions and marginal effects, for which boosted regression trees (BRTs), an approach ecologists previously used, could only achieve at large computational cost via bootstrapping.
+`bart_star()` fits a **S**imultaneous **T**ransformation **A**nd **R**ounding (STAR) model with a Bayesian Additive Regression Trees (BART) latent mean via `dbarts`. It suits ecological count data because it captures strong nonlinearities and covariate interactions (e.g. thresholds in temperature, elevation, and proximity to water) that GLMs/GAMs miss. It also returns calibrated posterior uncertainty for predictions and marginal effects. Boosted regression trees (BRTs), which ecologists have used previously, can only provide that uncertainty through costly bootstrapping.
 
-Two features are needed to make `bart_star()` usable for this application:
+**Offsets.** Each point count has a known offset $e_i > 0$, e.g. the estimated proportion of birds present that are detected, or the survey effort. Under a log link, the commonly used model is $\text{count}_i \sim \text{Poisson}\big(e_i \exp(\eta_i)\big), \eta_i = \mu(x_i)$, so $\mu(x_i)$ is a log density, not a log expected count. The relationship with $e_i$ is mechanistic and multiplicative, so it enters as an offset rather than as a covariate with an estimated effect.
 
-1. **Offsets**. Each point count has an associated offset term $e_i>0$ (e.g. the estimated proportion of birds present that are actually detected). Under a log-link, a commonly used model is $\text{count}_i\sim \text{Poisson}\big(\exp(\eta_i)\, e_i\big)$ so that $\eta_i = \mu(x_i)$ represents log density, not log expected count. This relationship is mechanistic and multiplicative, so it belongs as an offset rather than as a covariate with an estimated effect. STAR's transformation $g(\cdot)$ is not restricted to $\log$ and used different model, however, so the offset cannot simply be absorbed by dividing $y$ by $e$. Also, the strategy of dividing $y$ by $e$ does not work even we only used log-transformation. The purpose of these offsets is to help the models convert the distribution of counts to a distribution of absolute population density in an area. This way, we can not only assess areas that have a relatively large number of birds (i.e., relatively high counts), but we can also estimate the population size of a species (a pressing problem for ecologists).
+Offsets convert the distribution of counts into a distribution of absolute population density. This lets us compare areas by relative abundance and also estimate population size, a pressing problem for ecologists. In STAR, we don't use Poisson model and $g(\cdot)$ need not be $\log$, so the offset cannot be absorbed by shifting the linear predictor. Replacing $y$ by $y/e$ is also incorrect, even for $g = \log$, as shown below.
 
-2. **Weights**. See separate README_weight.MD file.
+## Background: the STAR model
 
- 
-## Background: unmodified STAR generative model
-STAR defines a count-valued model by (1) a continuous latent variable/proxy $y_i^\ast$ with a Gaussian regression model, and (2) a transformation-and-rounding link connecting $y_i^\ast$ to the observed count $y_i$:
+STAR defines a count-valued model in two parts: (i) A continuous latent variable $y_i^\ast$ with a Gaussian regression model (ii) A transformation-and-rounding link from $y_i^\ast$ to the observed count $y_i$.
 
-$$y_i = \lfloor y_i^\ast \rfloor,\qquad 
-z_i = g(y_i^\ast),\qquad 
-z_i = \mu(x_i) + \varepsilon_i, \quad \varepsilon_i\sim N(0,\sigma^2)$$
+$$y_i = h(y_i^\ast) = \lfloor y_i^\ast\rfloor, \qquad z_i = g(y_i^\ast), \qquad z_i = \mu(x_i) + \varepsilon_i, \quad \varepsilon_i \sim N(0, \sigma^2)$$
 
-where $g(\cdot)$ is a known or estimated monotone transformation and, in `bart_star()`, $\mu(x_i)$ is a BART sum-of-trees function. Because $g$ is monotone, event $\{y_i = j\}$ is equivalent to $y_i^\ast$ falling in $[j, j+1)$, i.e.
+Here $h$ is the floor operator, capped at `y_max`, and $g$ is a known or estimated increasing transformation. In `bart_star()`, $\mu(\cdot)$ is a BART sum-of-trees function. Because $g$ is monotone,
 
-$$\Pr(y_i = j\mid x_i) = \Pr\big(z_i\in [g(a_j), g(a_{j + 1}))\big),\qquad a_j = j \ (a_0 = -\infty, \ a_{y_{\max} + 1} = \infty)$$
+$$\Pr(y_i = j \mid x_i) = \Pr\big(g(a_j) \le z_i < g(a_{j+1})\big), \qquad a_j = j, \quad a_0 = -\infty, \quad a_{y_{\max}+1} = \infty$$
 
-This is the `a_j()` / `round_floor()` in `helper_functions.R`, and the resulting interval endpoints $z_\text{lower} = g(a_j)$, $z_\text{upper} = g(a_{j + 1})$ derive the Gibbs sampler in `bart_star()`:
+These cut points are given by `a_j()` in `helper_functions.R`. The interval endpoints $z_\text{lower, i} = g(a_{y_i})$ and $z_\text{upper, i} = g(a_{y_i+1})$ drive the Gibbs sampler:
 
-1. **Sample $z^\ast$**: draw $z_i\mid y_i$ from $N(\mu(x_i),\sigma^2)$ truncated to $[z_{\text{lower},i}, z_{\text{upper},i}]$.
-2. **Sample $(\mu,\sigma)$**: update the BART fit by calling `dbarts` with response $z^\ast$.
+1. **Sample $z^\ast$:** draw $z_i \mid y_i$ from $N(\mu(x_i), \sigma^2)$ truncated to $[g(a_{y_i}), g(a_{y_i+1}))$.
+2. **Sample $(\mu, \sigma)$:** update the BART fit (`dbarts`) with response $z^\ast$.
 3. **(Optional) update the transformation**: if $g$ is being learned rather than fixed.
-4. Repeat, use $g^{-1}$ and rounding to generate posterior predictive draws of $y$.
+4. **Predict:** repeat, draw $\tilde z \sim N(\mu, \sigma^2)$. Use $g^{-1}$ and rounding to generate posterior predictive draws $\tilde y = h(g^{-1}(\tilde z))$.
 
+## Model with offsets
 
-## Algorithm design: incorporating offsets
-Let $e_i>0$ be the known offset / exposure for observation $i$, with $e_i = 1$ at location where "exposure-free" (density) prediction is wanted. 
+Let $e_i > 0$ be the known offset for observation $i$. The rounding step is unchanged, so $y_i$ stays count-valued. The transformation now acts on the offset-adjusted latent variable:
 
-**Key idea: take offset through $g(\cdot)$, not through $y$.** Now keep $y_i = \lfloor y_i^\ast \rfloor$ exactly as before (so $y$ stays count-valued), but change the transformation step to act on the offset-adjusted continuous latent variable / proxy:
+$$y_i = h(y_i^\ast) = \lfloor y_i^\ast\rfloor, \qquad z_i = g\left(\frac{y_i^\ast}{e_i}\right), \qquad z_i = \mu(x_i) + \varepsilon_i, \quad \varepsilon_i \sim N(0, \sigma^2)$$
 
-$$y_i = \lfloor y_i^\ast\rfloor,\qquad 
-z_i = g\ (\frac{y_i^\ast}{e_i}),\qquad
-z_i = \mu(x_i) + \varepsilon_i$$
+Here $y_i^\ast/e_i$ is the latent count per unit exposure (density), and $\mu(\cdot)$ is modelled on that scale.
 
-This models $\mu(x_i)$ on the multiplicative, offset-adjusted scale (density), while $y_i$ remains the observed raw count. Since $g$ is still monotone, $\{y_i = j\}$ is equivalent to $y_i^\ast/e_i\in [j/e_i,(j + 1)/e_i)$, giving the modified likelihood
+### Likelihood
 
-$$\Pr(y_i = j\mid x_i) = \Pr(y_i^\ast\in [j,\, j + 1)) = \Pr(\frac{y_i^\ast}{e_i}\in \Big[\frac{j}{e_i},\, \frac{j + 1}{e_i}\Big)) = \Pr(z_i\in \Big[g\big(\tfrac{j}{e_i}\big), g\big(\tfrac{j + 1}{e_i}\big)\Big)$$
+Since $g$ is monotone and $e_i > 0$,
 
-Note the interval is $[g(j/e_i),\, g((j + 1)/e_i))$ instead of $g(j/e_i + 1)$, which is the incorrect endpoint implied by the rejected $y/e$ approach above.
+$$y_i = j \iff a_j \le y_i^\ast < a_{j+1} \iff \frac{a_j}{e_i} \le \frac{y_i^\ast}{e_i} < \frac{a_{j+1}}{e_i} \iff g\left(\frac{a_j}{e_i}\right) \le z_i < g\left(\frac{a_{j+1}}{e_i}\right)$$
 
-### Required code changes
-The change is mainly to cut points, not to the sampler structure itself:
- - Replace $a_j = j$ with the offset-scaled cut points $a_j(e_i) = j/e_i$ and symmetrically $a_{j + 1}(e_i) = (j + 1)/e_i$, computed per-observation since $e_i$ varies across $i$.
- - `z_lower`, `z_upper` become $g(a_j / e)$, $g(a_{j + 1} / e)$.
- - Block 1 (truncated-normal draw of $z^\ast$) and the point wise log-likelihood / WAIC computation use these offset-adjusted bounds; no other part of the Gibbs sampler changes, since $g$, $\mu(\cdot)$ and $\sigma$ are all still defined on the $z$ scale.
- - **Prediction** must re-introduce the test-set offset $e_\text{test}$ after inverting $g$,
-$$\tilde y = \Big\lfloor g^{-1}(\tilde z)\cdot e_\text{test}\, \Big\rfloor$$
+Therefore
 
-### Transformation $g$
-The offset enters $g$ as $g(y^\ast/e_i)$, and there are three cases on how $g$ itself is obtained. Whatever $g$ turns out to be, the pointwise contribution of observation $i$ is always STAR interval probability, with offset in the cut points $a_j(e_i) = j/e_i$,
+$$\Pr(y_i = j \mid \mu_i, \sigma) = \Phi\left(\frac{g(a_{j+1}/e_i) - \mu_i}{\sigma}\right) - \Phi\left(\frac{g(a_j/e_i) - \mu_i}{\sigma}\right)$$
 
-$$\Pr(y_i = j|x_i) = \Phi(\frac{g(a_{j + 1}(e_i)) - \mu_i}{\sigma}) - \Phi(\frac{g(a_{j}(e_i)) - \mu_i}{\sigma})$$
+with $\pm\infty$ endpoints preserved ($-\infty/e_i = -\infty$, $\infty/e_i = \infty$). The log-likelihood computed by `logLikeRcpp` / `logLikePointRcpp` is
 
-so the log-likelihood (the `logLikePointRcpp` function in `rounded_source.cpp`) is 
+$$\ell(\mu, \sigma, g) = \sum_{i=1}^n \log[\Phi(\frac{g(a_{y_i+1}/e_i) - \mu_i}{\sigma}) - \Phi(\frac{g(a_{y_i}/e_i) - \mu_i}{\sigma})]$$
 
-$$l = \sum_{i = 1}^{n}\log [\Phi(\frac{g(a_{j + 1}(e_i)) - \mu_i}{\sigma}) - \Phi(\frac{g(a_{j}(e_i)) - \mu_i}{\sigma})]$$
+**Why not $y/e$.** The interval for $y_i = j$ is $[j/e_i, (j+1)/e_i)$, with width $1/e_i$. Passing $y/e$ as data would instead give $[j/e_i, j/e_i + 1)$, which has the wrong upper endpoint whenever $e_i \neq 1$.
 
-1. **Known, fixed $g$** (`identity`, `log`, `sqrt`, or `box-cox` with a user-supplied $\lambda$). $g$ never changes across iterations, so the offset-adjusted cut points $z_\text{lower} = g(a_j/e)$, $z_\text{upper} = g(a_{j + 1}/e)$ can be computed once, before the sampling iteration, exactly as `z_lower` / `z_upper` are currently computed once in `bart_star()`. No per-iteration cost is added.
-  
-2. **$g$, estimated once from the data, then held fixed** (`np`, `pois`, `neg-bin`). Here $g$ is fit before the sampler starts (e.g. via `g_cdf()` or moment matching), so the offset must be folded into that one-time estimation step: $g$ should be fit to the offset-adjusted values $y_i/e_i$, since it is meant to approximate the distribution of $y^\ast$ itself. Once fit, $g$ is treated as known for the rest of the algorithm, and cut points are computed once, as in Case 1. Here the estimator is
+**Special case $g = \log$.** The model becomes $\log y_i^\ast = \mu(x_i) + \log e_i + \varepsilon_i$. This recovers the familiar additive log-offset of Poisson/negative-binomial regression.
 
- $$\hat{g}(\frac{y_i}{e_i}) = \Phi^{-1}(\hat{F}_Y(y_i - 1)), \quad i = 1,...,n, y_i\neq 0$$
+### Gibbs sampler with offsets
 
- with $\hat{F}_Y$ could be one of 
+The offset changes only the cut points, from $a_j$ to $a_j / e_i$. The sampler structure is unchanged:
 
- $$\hat{F}^\text{np}_Y(t) = \frac{n}{n + 1}\hat{\text{ecdf}}(y)(t),\quad \hat{F}^\text{pois}_Y(t) = F_\text{Pois}(t; \hat{\mu}_y),\quad \hat{F}^\text{neg-bin}_Y(t) = F_\text{NB}(t; \hat{r} = \frac{\hat{\mu}_y^2}{\hat{\sigma}_y^2 - \hat{\mu}_y}, \hat{p} = \frac{\hat{\mu}_y}{\hat{\sigma}^2_y})$$
+| Step | With offsets |
+|---|---|
+| Block 1: sample $z$ | $z_i \sim N(\mu_i, \sigma^2)$ truncated to $[g(a_{y_i}/e_i),\, g(a_{y_i+1}/e_i))$ |
+| Block 2: sample $(\mu, \sigma)$ | unchanged (`dbarts` on the $z$ scale) |
+| Block 3: sample Box-Cox $\lambda$ | slice sampler on $\ell(\lambda) + \log \pi(\lambda)$, with $g_\lambda(a_{y_i}/e_i)$ and $g_\lambda(a_{y_i+1}/e_i)$; $\pi(\lambda) = N(1/2, 1)$ truncated to $[0, 3]$ |
+| Pointwise log-likelihood / WAIC | uses the offset-adjusted bounds |
+| Test log-predictive score | uses $g(a_{y_j}/e_j^{\text{test}})$ and $g(a_{y_j+1}/e_j^{\text{test}})$ |
 
- where $\hat{\mu}_y$, $\hat{\sigma}_y$ are the mean, SD of the $y$.
-  
-3. **$g$ sampled at every iteration (fully Bayesian)** (`box-cox` with $\lambda$ updated by slice sampling). Here $g$ changes every iteration, so $z_\text{lower}$ and $z_\text{upper}$ must be **re-computed at every iteration** from the current draw of $g$ (`g(a_j/e)`, `g(a_{j + 1}/e)`), exactly as `bart_star()` already does for `box-cox` in Block 3. Without an offset, $a_j = j$ depends only on the observed counts, so $g$ can be evaluated once on a small grid and looked up per observations; with an offset, $a_j(e_i) = j/e_i$ depends on the pair $(j, e_i)$. Also, any likelihood used to update $g$ itself need offset-adjusted arguments `g_bc(a_y/e, lambda)`, `g_bc(a_yp1/e,lambda)`. Then the log-likelihood gives update, the full conditional posterior for $\lambda$ (given the current draws of $(\mu, \sigma)$),
+The scaled cut points $a_{y_i}/e_i$ and $a_{y_i+1}/e_i$ are computed **once**, before the MCMC loop. For a fixed $g$, the bounds $g(\cdot)$ are also computed once. For Box-Cox, only $g_\lambda$ is re-applied to these stored cut points at each iteration, as in the original sampler.
 
-$$\pi(\lambda|\mu, \sigma, y, e) \propto \exp(l(\lambda))\cdot \pi(\lambda), \quad \pi(\lambda) = N(\frac{1}{2}, 1)\text{ truncated to }[0, 3]$$
+### Prediction
 
-and the $l(\lambda)$ is the same expression but the $g$ is specified as $g_\text{bc}$. As a temporary remark here, the `bart_star()` with offset feature has not been extended to `ispline` (*save for next-step exploration*), one reason is ispline does not work well enough for original `bart_star()` thus not recommended to use during application; another technical reason is its sampler locates cut points via `match(a_y, t_g)` against an integer grid `t_g`, which assumes $a_j = j$ is shared across observations, but under an offset, $a_j(e_i) = j/e_i$ is continuous and observation-specific, so `match()` function would fail.
+The offset is re-introduced after inverting $g$ and before rounding:
 
-### Implementation notes
+$$\tilde z_i \sim N(\mu_i, \sigma^2), \qquad \tilde y_i = h\big(e_\text{test}\cdot g^{-1}(\tilde z_i)\big)$$
 
-Codes for the function change is in **`bart_star_offset.R`** file, and everything else in original `bart_star()`'s Gibbs sampler (`a_j`, `g_bc`, `g_inv_bc`, `round_floor`, `g_inv_approx`, `rtruncnormRcpp`, `logLikeRcpp`, `logLikePointRcpp`) is used unmodified, called with offset scaled arguments ($a_j(e_i) = j/e_i$ in place of $$a_j = j).
+Setting $e^{\text{test}}$ to a survey's exposure gives predicted counts for that survey.
 
-- `set_offset(y, offset)` (new function): attaches `offset` as an attribute on `y`, so `bart_star(y,..., offset = TRUE)` can recover it later without passing the vector again explicitly.
-- `g_cdf_offset(y, offset, distribution)`: offset-adjusted replacement for `g_cdf()`. Relocates each height $\Phi^{-1}(\hat{F}_y(y_i - 1))$ to $t_0 = y_i/e_i$ instead of $t_0 = y_i$. Because the height depends on $y_i$ but the location depends on $y_i/e_i$, e.g. a larger count with a large $e_i$ can land at a smaller $t_0$ than a smaller count with $e_i = 1$, so the pooled pairs ($t_0$, height) are no longer guaranteed increasing in $t_0$, even though $g$ must be monotone. So **isotonic regression** is applied first to enforce this before a monotone Hermite spline is fit. Out-of-range queries are clamped rather than extrapolated.
-- `expectation_g_offset(g, mu, sigma, offset, Jmax)`: offset-adjusted replacement for `expectation_gRcpp()`. The original assumes one cut-point grid shared across observations, valid only when $a_j$ does not depend on $i$. With an offset $a_j(e_i) = j/e_i$ is observations-specific, so cut points are built as an $n\times (J_\max + 1)$ matrix and $\mathbb{E}(Y_i)$ is computed via the tail-sum identity $\sum_{j = 0}^{J_{\max, i}}\Pr(Y_i>j)$ row-wise. Used only when `offset` is non-constant (which is more common in application), the `expectation_gRcpp()` still handles the constant (including all 1's) case.
-- `bart_star(offset)`: adds `offset`/`offset_test` arguments. Cut points $a_j(e_i)$ are computed once and reused in initialisation, the Box-Cox slice sampler and the log-likelihood. `z_star` and `sigest` are initialised from `y/offset`. For `np/pois/neg-bin`, $g$ is fit via `g_cdf_offset()` in place of `g_cdf()`. Predictive draws re-introduce the offset after inverting $g$: $\tilde{y} = \lfloor g^{-1}(\tilde{z}\cdot e)\rfloor$. `transformation = ispline` is not supported for current offset version.
+### Conditional expectation
+
+$$\mathbb{E}(y_i \mid \mu_i, \sigma, e_i) = \sum_{j=0}^{J_i - 1} j [\Phi(\frac{g(a_{j+1}/e_i) - \mu_i}{\sigma}) - \Phi(\frac{g(a_j/e_i) - \mu_i}{\sigma})]$$
+
+The truncation point is
+
+$$J_i = \min\{\lceil h\big(e_i \, g^{-1}(q_{0.9999})\big)\rceil,\ \lceil 2 \max_k (y_k/e_k) \cdot e_i \rceil\}$$
+
+where $q_{0.9999}$ is the 0.9999 quantile of $N(\mu_i, \sigma^2)$. The cap $2\max_k(y_k/e_k)$ is stated on the density scale and converted to counts at exposure $e_i$; for unit offsets it reduces to $2\max(y)$. `expectation_gRcpp()` takes a cut-point grid $g(a_j)$, $j = 0, 1, \dots$, shared by all observations. With offsets the grid $g(a_j/e_i)$ depends on $e_i$. Observations are therefore grouped by distinct offset value $e$, and `expectation_gRcpp()` is called once per group with the grid `g(a_j(0:J)/e)`. With constant offsets this is a single call, identical to the original code.
+
+## Transformation $g$ and normalization of the offsets
+
+### Normalization
+
+This step is to address the issue with `g_cdf(y)` without modifying the original helper function. For the transformations estimated from the data (`np`, `pois`, `neg-bin`), `g_cdf(y)` is fitted to the raw counts, with knots at $t = 1, 2, \dots$, but the sampler evaluates it at the offset-adjusted values $y^\ast/e$. Without normalization, where these values fall relative to the knots depends on the arbitrary units or range of $e$ (e.g. minutes vs. hours), which can push most of them into the linear extrapolation region and change the fitted model. Rescaling the offsets so that a typical observation has relative exposure 1 keeps $g$ evaluated where it was estimated and makes the fit invariant to the units of $e$. For the Box-Cox family (`identity`, `log`, `sqrt`, `box-cox`), a rescaling of $e$ only shifts and scales $z$, which $(\mu, \sigma)$ absorb, so the normalization has no effect there. Internally, the offsets are replaced by **relative exposures**
+
+$$\tilde e_i = \frac{e_i}{\bar e}, \qquad \tilde e^{\text{test}}_j = \frac{e^{\text{test}}_j}{\bar e}, \qquad \bar e = \exp\left(\frac{1}{n} \sum_{i=1}^n \log e_i\right)$$
+
+where $\bar e$ is the geometric mean of the training offsets. The test offsets are divided by the **same** $\bar e$ (which is part of the fitted model), so inputs and outputs stay in the original units. The normalization is a reparametrization of $g$:
+
+$$z_i = g_0(\frac{y_i^\ast}{\tilde e_i}) = g(\frac{y_i^\ast}{e_i}) \quad \text{with} \quad g(t) = g_0(\bar e t)$$
+
+It has three consequences:
+
+1. **Invariance to the units of $e$.** Rescaling $e \to ce$ for $c > 0$ (e.g. minutes to hours) leaves $\tilde e$ unchanged, so the fitted model is identical.
+2. **No change for unit offsets.** If $e_i \equiv 1$, then $\bar e = 1$ and $\tilde e = e$.
+3. **Natural scale for an estimated $g$.** An observation at the typical exposure ($e_i = \bar e$, i.e. $\tilde e_i = 1$) has exactly the original cut points $a_j$. A $g$ estimated from the counts is therefore evaluated on the scale where it was estimated.
+
+### Case 1: known, fixed $g$ (`identity`, `log`, `sqrt`)
+
+The Box-Cox family is closed under rescaling up to an affine map. For $\lambda > 0$,
+
+$$g_\lambda(t/c) = \frac{(t/c)^\lambda - 1}{\lambda} = c^{-\lambda} g_\lambda(t) + \frac{c^{-\lambda} - 1}{\lambda}$$
+
+and for $\lambda = 0$, $\log(t/c) = \log t - \log c$. An affine map $z \mapsto a z + b$ with $a > 0$ is absorbed by $(\mu, \sigma) \mapsto (a\mu + b,\, a\sigma)$, so the likelihood does not depend on the choice of $\bar e$. The normalization affects only the prior scale of $\mu$ and $\sigma$.
+
+### Case 2: $g$ estimated once from the data (`np`, `pois`, `neg-bin`)
+
+$g$ is estimated before the sampler by the unmodified `g_cdf(y, distribution)`:
+
+$$g(j) = \Phi^{-1}\big(\hat F_y(j - 1)\big), \qquad j \in \{\text{unique positive } y_i\}$$
+
+This is interpolated by a monotone Hermite spline (`splinefun(method = "monoH.FC")`, linear outside the knot range), with
+
+$$\hat F^{\text{np}}_y(t) = \frac{n}{n+1}\widehat{\text{ecdf}}_y(t), \qquad \hat F_y(t)^{\text{pois}} = F_{\text{Pois}}(t; \hat\mu_y), \qquad \hat F_y(t)^{\text{neg-bin}} = F_{\text{NB}}(t; \hat r = \frac{\hat\mu_y^2}{\hat\sigma_y^2 - \hat\mu_y}, \hat p = \frac{\hat\mu_y}{\hat\sigma_y^2})$$
+
+where $\hat\mu_y$ and $\hat\sigma_y$ are the sample mean and SD of $y$. Combined with the normalization, $g$ is calibrated to the pooled count distribution at the reference exposure $\bar e$. It is then evaluated at the relative cut points $a_j/\tilde e_i$ and held fixed for the rest of the sampler, as in Case 1.
+
+### Case 3: $g$ sampled every iteration (`box-cox`)
+
+$\lambda$ is updated by the univariate slice sampler with target
+
+$$\pi(\lambda \mid \mu, \sigma, y, e) \propto \exp\{\ell(\lambda)\} \pi(\lambda), \qquad \ell(\lambda) = \sum_i \log[\Phi(\frac{g_\lambda(a_{y_i+1}/\tilde e_i) - \mu_i}{\sigma}) - \Phi(\frac{g_\lambda(a_{y_i}/\tilde e_i) - \mu_i}{\sigma})]$$
+
+The scaled cut points are stored once, and only $g_\lambda$ is re-applied after each update to refresh $z_{\text{lower}}$ and $z_{\text{upper}}$. By the affine argument in Case 1, $\ell(\lambda)$ does not depend on $\bar e$ once $(\mu, \sigma)$ are rescaled accordingly.
+
+### `ispline` is not supported with offsets
+
+The I-spline sampler locates cut points by exact matching (`match(a_y, t_g)`) against an integer grid, which assumes $a_j = j$ is shared across observations. Under an offset, $a_j/e_i$ is continuous and observation-specific. `transformation = "ispline"` therefore stops with an error when any offset differs from 1. With unit offsets, it is dispatched to the original I-spline sampler unchanged.
+
+## Initialization
+
+Block 1 draws $z_i$ by inverse CDF:
+
+$$z_i = \mu_i + \sigma\Phi^{-1}\big(G_{l,i} + u_i\,(G_{u,i} - G_{l,i})\big), \qquad G_{l,i} = \Phi(\tfrac{z_{\text{lower},i} - \mu_i}{\sigma}),\quad G_{u,i} = \Phi(\tfrac{z_{\text{upper},i} - \mu_i}{\sigma})$$
+
+with the result clamped to $[z_{\text{lower},i}, z_{\text{upper},i}]$. If the current $\mu_i$ lies many $\sigma$ away from its truncation interval, $G_{l,i}$ and $G_{u,i}$ are numerically both 0 or both 1. The draw then sticks at an interval endpoint instead of following the truncated normal. With offsets, the intervals $[g(a_{y_i}/\tilde e_i), g(a_{y_i+1}/\tilde e_i))$ live on the offset-adjusted scale. When the offsets vary, their locations shift from observation to observation by an amount driven by $\tilde e_i$ alone. The starting values must therefore be computed on the same $y/\tilde e$ scale, so that the first $\mu$ and $\sigma$ are close to these intervals. `sigest` deserves particular care. It is used only once, but it fixes the prior for $\sigma$ (via `sigquant`) for the entire run, so a mis-scaled value does not wash out.
+
+The code sets `offsets_vary = length(unique(offsets)) > 1`, evaluated on the supplied offsets before normalization, since the offsets can be different across individuals or constant for all $i$.
+
+- **Constant offsets** (including the default $e_i \equiv 1$). Then $\tilde e_i \equiv 1$, the offset-adjusted scale coincides with the count scale, and the original initialization is kept. With the defaults the output is identical to the original `bart_star()`.
+- **Different offsets.** The initial latent values are placed strictly inside their truncation intervals. For `box-cox`, `sigest` is computed on the offset-adjusted scale rather than by the pilot MCMC, which works on the raw counts.
+
+| Quantity | Constant offsets | Different offsets |
+|---|---|---|
+| Latent $z$ | $z_i^{(0)} = g((y_i + \lvert\xi_i\rvert)/\tilde e_i)$, $\xi_i \sim N(0, 1)$ | $z_i^{(0)} = g((y_i + U_i)/\tilde e_i)$, $U_i \sim \text{Unif}(0, 1)$ |
+| `sigest` (all except `box-cox`) | $\mathrm{sd}{g((y_i + 1)/\tilde e_i)}$ | $\mathrm{sd}{g((y_i + 1)/\tilde e_i)}$ |
+| `sigest` (`box-cox`) | original pilot MCMC (mean-only STAR model) | $\mathrm{sd}{g_{\lambda^{(0)}}((y_i + 1)/\tilde e_i)}$, $\lambda^{(0)} \sim \text{Unif}(0, 1)$ (the initial $\lambda$) |
+| Grid for $g^{-1}$ (`np`, `pois`, `neg-bin`) | 250 equally spaced points on $\big[0, \min\{2\max_i(y_i/\tilde e_i), y_{\max}/\min_i \tilde e_i\}]$ plus 250 quantiles of the unique values of $(y_i + 1)/\tilde e_i$, $y_i < y_{\max}$ | same |
+
+**Latent start inside the interval.** Since $U_i \in (0, 1)$,
+
+$$\frac{y_i}{\tilde e_i} < \frac{y_i + U_i}{\tilde e_i} < \frac{y_i + 1}{\tilde e_i} \Longrightarrow g\left(\frac{a_{y_i}}{\tilde e_i}\right) \le z_i^{(0)} < g\left(\frac{a_{y_i+1}}{\tilde e_i}\right)$$
+
+so every initial $z_i$ is consistent with its observed count. For $y_i = 0$ the lower endpoint is $-\infty$. For $y_i = y_{\max}$ the upper endpoint is $+\infty$. The half-normal start $y_i + \lvert\xi_i\rvert$ exceeds $y_i + 1$ with probability $2\{1 - \Phi(1)\} \approx 0.32$, placing those starts outside their intervals.
+
+**Box-Cox `sigest`.** The pilot MCMC fits a mean-only model to the raw counts. When the offsets vary across individuals, the raw counts carry extra spread from exposure differences that the offsets already account for. The pilot therefore overstates the residual SD on the offset-adjusted scale. Computing $\mathrm{sd}\{g_\lambda((y+1)/\tilde e)\}$ uses the same rule as the other transformations. The grid for $g^{-1}$ spans the density scale $y/\tilde e$, the domain of $g$'s argument. The approximate inverse `g_inv_approx(g, t_grid)` is then used unchanged.
+
+## Implementation
+
+All changes are in **`bart_star_offset.R`**, which defines `bart_star()` with two additional arguments. No helper function is added or modified. `a_j`, `g_bc`, `g_inv_bc`, `g_cdf`, `g_inv_approx`, `round_floor`, `rtruncnormRcpp`, `logLikeRcpp`, `logLikePointRcpp`, `expectation_gRcpp` and `uni.slice` are all called unchanged, with offset-scaled arguments where needed.
+
+### Interface
+
+```r
+bart_star(y, X, X_test = NULL, y_test = NULL,
+          offsets      = rep(1, length(y)),     # training offsets e_i > 0
+          offsets_test = rep(1, NROW(X_test)),  # test offsets (1 = density)
+          transformation = 'np', ...)           # all other arguments as before
+```
+
+- `offsets` and `offsets_test`take the offset values one per observation. A single number will be used for every observation, e.g. `offset_test = 1` means $e_\text{test} = 1$ for all test points.
+- Both must be finite and strictly positive, and have lengths `length(y)` and `nrow(X_test)` respectively. Otherwise an error is raised.
+- The returned list has the same elements as the original. Count-scale outputs (`post.pred`, `fitted.values`, `post.fitted.values`) are at the training exposures `offsets`. The test outputs (`post.pred.test`, `post.fitted.values.test`, `post.log.pred.test`) are at `offsets_test`. `post.mu.test` is on the latent $z$ scale.
+
+### Code changes (all marked `# OFFSETS:` in the `bart_star_offset.R` code)
+
+| Location | Change |
+|---|---|
+| Argument checks | validate and recycle `offsets` / `offsets_test` |
+| Normalization | `offsets_vary = length(unique(offsets)) > 1` (before normalization); `e_bar = exp(mean(log(offsets)))`; `offsets = offsets/e_bar`; `offsets_test = offsets_test/e_bar` |
+| `ispline` dispatch | error if offsets differ from 1; otherwise drop the offset arguments and call the original sampler |
+| Grid for `g_inv_approx()` | built from `y/offsets` and `(y + 1)/offsets` |
+| Initial `z_star` | different offsets: `g((y + runif(n))/offsets)`; constant offsets: `g((y + abs(rnorm(n)))/offsets)` |
+| `sigest` | `sd(g((y + 1)/offsets))`; for `box-cox`, the pilot MCMC is used only when the offsets are constant |
+| Cut points | `a_y = a_j(y, y_max)/offsets`; `a_yp1 = a_j(y + 1, y_max)/offsets`; these feed Block 1, Block 3 (Box-Cox) and the pointwise log-likelihood |
+| Predictive draws | `round_floor(g_inv(z_tilde) * offsets, y_max)`, and likewise with `offsets_test` |
+| Conditional expectation | `Jmax` computed at exposure $e_i$ and capped at `ceiling(2*max(y/offsets)*offsets)`; one `expectation_gRcpp()` call per distinct offset with grid `g(a_j(0:J)/e)` (training and test) |
+| Test log-predictive score | `g(a_j(y_test)/offsets_test)`, `g(a_j(y_test + 1)/offsets_test)` |
+
+### Example
+
+```r
+library(countSTAR)
+source("bart_star_offset.R")
+
+# y: counts, X: covariates, e: offsets (e.g. detection proportion or effort)
+fit = bart_star(y = y, X = X, offsets = e,
+                X_test = X_new, offsets_test = 1,   # density predictions
+                transformation = 'log', save_y_hat = TRUE)
+
+fit$fitted.values                        # E(y_i | x_i, e_i): expected counts at the observed exposures
+colMeans(fit$post.fitted.values.test)    # E(y | x_new, e = 1): expected density
+```
+
+### Notes
+
+- **Computational cost:** Only the conditional expectation scales with the number of distinct offset values, through one `expectation_gRcpp()` call each. Sampling, prediction and the log-likelihood add no per-iteration cost beyond the original, because the scaled cut points are precomputed. Default `offsets_test = 1` gives a single call for the test set.
+- **Not yet supported:** `transformation = "ispline"` with non-unit offsets; regression weights (see `README_weight.md`).
