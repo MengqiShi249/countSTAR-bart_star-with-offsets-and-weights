@@ -2,9 +2,11 @@
 #' MCMC Algorithm for BART-STAR, with known offsets/exposures
 #'
 #' Run the MCMC algorithm for a BART model for count-valued responses using STAR,
-#' with optional known offsets (exposures) \code{e_i > 0}. With the default
-#' \code{offsets = rep(1, length(y))} and \code{offsets_test = 1}, this function
-#' runs exactly the same computations as the original \code{bart_star()}.
+#' with optional known offsets (exposures) \code{e_i > 0}. The model is
+#' \code{y = floor(y*)}, \code{g(y*/e) = mu(x) + eps}, so mu and sigma are on the
+#' scale of the transformed density \code{g(y*/e)}. With the default
+#' \code{offsets = 1}, this function runs exactly the same computations as the
+#' original \code{bart_star()}.
 #'
 #' @param y \code{n x 1} vector of observed counts
 #' @param X \code{n x p} matrix of predictors
@@ -12,17 +14,18 @@
 #' @param y_test \code{n_test x 1} vector of the test data responses (used for
 #' computing log-predictive scores)
 #' @param offsets \code{n x 1} vector (or scalar) of known offsets/exposures
-#' \code{e_i > 0} for the training data; default is \code{rep(1, length(y))}
-#' (no offset)
+#' \code{e_i > 0} for the training data; default is 1 (no offset)
 #' @param offsets_test \code{n_test x 1} vector (or scalar) of known
 #' offsets/exposures for the test data; default is 1 (e.g., predictions per
-#' unit exposure)
+#' unit exposure). Ignored if \code{X_test = NULL}
 #' @param transformation transformation to use for the latent process; must be one of
 #' \itemize{
 #' \item "identity" (identity transformation)
 #' \item "log" (log transformation)
 #' \item "sqrt" (square root transformation)
-#' \item "np" (nonparametric transformation estimated from empirical CDF)
+#' \item "np" (nonparametric transformation estimated from empirical CDF; with
+#' offsets, the count-scale estimate is evaluated at the reference exposure
+#' \code{e_bar}, the geometric mean of \code{offsets})
 #' \item "pois" (transformation for moment-matched marginal Poisson CDF)
 #' \item "neg-bin" (transformation for moment-matched marginal Negative Binomial CDF)
 #' \item "box-cox" (box-cox transformation with learned parameter)
@@ -56,8 +59,8 @@
 bart_star = function(y,
                      X,
                      X_test = NULL, y_test = NULL,
-                     offsets = rep(1, length(y)),
-                     offsets_test = rep(1, NROW(X_test)),
+                     offsets = 1,
+                     offsets_test = 1,
                      transformation = 'np',
                      y_max = Inf,
                      n.trees = 200,
@@ -126,15 +129,6 @@ bart_star = function(y,
     if(any(!is.finite(offsets_test)) || any(offsets_test <= 0)) stop('offsets_test must be finite and strictly positive')
   }
   
-  # OFFSETS: relative exposures e_i / e_bar, with e_bar the geometric mean of
-  # the training offsets (see @details). Identity when offsets = 1.
-  # OFFSETS: do the offsets vary across observations? (decided on the raw
-  # values, before normalization; FALSE for the default and any constant offset)
-  offsets_vary = length(unique(offsets)) > 1
-  e_bar = exp(mean(log(offsets)))
-  offsets = offsets/e_bar
-  if(include_test) offsets_test = offsets_test/e_bar
-  
   # Define the transformation:
   if(transform_family == 'bc'){
     # Lambda value for each Box-Cox argument:
@@ -152,8 +146,13 @@ bart_star = function(y,
   
   if(transform_family == 'cdf'){
     
-    # Transformation function (unchanged; see @details):
-    g = g_cdf(y = y, distribution = transformation)
+    # OFFSETS: g_cdf() is estimated from the counts y, i.e. on the scale of
+    # y* at a typical exposure. Map the density scale y*/e to that scale with the
+    # reference exposure e_bar (geometric mean of the offsets): g(t) = g_y(e_bar*t).
+    # Only this call changes; e_bar = 1 (and g = g_y) when offsets = 1.
+    e_bar = exp(mean(log(offsets)))
+    g_y = g_cdf(y = y, distribution = transformation)
+    g = function(t) g_y(e_bar*t)
     
     # Define the grid for approximations using equally-spaced + quantile points
     # OFFSETS: on the offset-adjusted scale y/e, the domain of g's argument
@@ -168,21 +167,19 @@ bart_star = function(y,
     lambda = NULL
   }
   
-  # Random initialization for z_star (OFFSETS: z = g(y*/e)):
-  if(offsets_vary){
-    # OFFSETS: start strictly inside each truncation interval,
-    # y*/e in [y/e, (y+1)/e)  <=>  z in [g(a_y/e), g(a_{y+1}/e))
-    z_star = g((y + runif(n = n))/offsets)
-  } else z_star = g((y + abs(rnorm(n = n)))/offsets)
+  # Random initialization for z_star (OFFSETS: original rule on the scale y*/e):
+  z_star = g((y + abs(rnorm(n = n)))/offsets)
   
-  # Now initialize the model: BART!
+  # Now initialize the model: BART
   
   # Initialize the dbarts() object:
   control = dbarts::dbartsControl(n.chains = 1, n.burn = 0, n.samples = 1,
                                   n.trees = n.trees)
   # Initialize the standard deviation:
   if(is.null(sigest)){
-    if(transformation == 'box-cox' && !offsets_vary){
+    # OFFSETS: the pilot MCMC models the raw counts and cannot take offsets,
+    # so it is used only when there are none
+    if(transformation == 'box-cox' && all(offsets == 1)){
       # Lambda is unknown, so use pilot MCMC with mean-only model to identify sigma estimate:
       fit0 = genMCMC_star(y = y,
                           sample_params = countSTAR:::sample_params_mean,
@@ -191,8 +188,7 @@ bart_star = function(y,
       sigest = median(fit0$post.sigma)
     } else {
       # Transformation is known, so simply transform the raw data and estimate the SD
-      # (OFFSETS: on the offset-adjusted scale; also used for 'box-cox' when the
-      # offsets vary, since the pilot MCMC works on the raw counts):
+      # (OFFSETS: on the scale y/e; for 'box-cox' with offsets, at the initial lambda):
       sigest = sd(g((y + 1)/offsets), na.rm=TRUE)
     }
   }
