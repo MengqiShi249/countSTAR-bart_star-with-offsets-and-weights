@@ -1,83 +1,82 @@
-# countSTAR: sample weights for `bart_star`
+# countSTAR: sample weights for `bart_star()`
 
-This file describes the second planned extension to `bart_star()`: **sample weights**, which correct for non-uniform sampling effort across locations (e.g. some regions of Canada are easier to survey than others). It is a design document only. No code is implemented yet; that is later work, after the offset extension is finalized.
+This file describes the second planned extension to `bart_star()`: **sample weights**, which correct for non-uniform sampling effort across locations (e.g. some regions of Canada are easier to survey than others). It is a design document only. No code is implemented yet, which leaves to later work, after the offset extension (`README_offset.md`) is finalized.
 
 ## Motivation
 
-Sampling locations are not a random sample, so each observation $i$ carries a known sample weight $w_i > 0$ that reflects how over- or under-represented its location is (a larger $w_i$ means the observation represents a larger population share).
+Sampling locations are not a random sample, so each observation $i$ carries a known sample weight $w_i > 0$ that reflects how over- or under-represented its location is. A larger $w_i$ means the observation represents a larger population share.
 
-A standard approach in the literature is the Bayesian **pseudo-posterior** of [Savitsky & Toth (2016)](https://projecteuclid.org/journals/electronic-journal-of-statistics/volume-10/issue-1/Bayesian-estimation-under-informative-sampling/10.1214/16-EJS1153.pdf): each unit's likelihood contribution is raised to the power of its weight,
+A standard approach is the Bayesian **pseudo-posterior** of [Savitsky & Toth (2016)](https://projecteuclid.org/journals/electronic-journal-of-statistics/volume-10/issue-1/Bayesian-estimation-under-informative-sampling/10.1214/16-EJS1153.pdf). It raises each unit's likelihood contribution to the power of its weight, after normalizing the weights to sum to $n$:
 
-$$L_w(\theta) = \prod_{i=1}^{n} p(y_i \mid x_i, \theta)^{w_i}, \qquad \ell_w(\theta) = \sum_{i=1}^{n} w_i \log p(y_i \mid x_i, \theta).$$
+$$L_{\tilde w}(\theta) = \prod_{i=1}^{n} p_i(\theta)^{\tilde w_i}, \qquad \tilde w_i = \frac{n\thinspace w_i}{\sum_j w_j}, \qquad \sum_i \tilde w_i = n$$
 
-## Weighted STAR log-likelihood
+Without normalization, $\sum_i w_i$ (often of the order of the population size) acts as the effective sample size, and the pseudo-posterior is far too concentrated.
 
-Under STAR, $p(y_i \mid x_i, \theta)$ is the interval probability $`\Phi\big(\frac{z_{\text{upper},i} - \mu_i}{\sigma}\big) - \Phi\big(\frac{z_{\text{lower},i} - \mu_i}{\sigma}\big)`$, so the target on the $y$ scale is
+## Why weighting STAR is not immediate
 
-$$\ell_w(\theta) = \sum_{i=1}^{n} w_i \log\left[\Phi\left(\frac{z_{\text{upper},i} - \mu_i}{\sigma}\right) - \Phi\left(\frac{z_{\text{lower},i} - \mu_i}{\sigma}\right)\right].$$
+Under STAR, $`p_i(\theta) = \Phi\big((z_{\text{upper},i} - \mu_i)/\sigma\big) - \Phi\big((z_{\text{lower},i} - \mu_i)/\sigma\big)`$. The sampler never evaluates this directly. It augments with latent $z_i \sim N(\mu_i, \sigma^2)$ truncated to $`[z_{\text{lower},i}, z_{\text{upper},i})`$, and updates $(\mu, \sigma)$ as if $z$ were observed. This works for $w \equiv 1$ because integrating the latent density over the interval returns $p_i$. With weights, powers and integrals do not commute:
 
-The sampler in `bart_star()` does not evaluate this directly. It draws $z_i^\ast \mid y_i, \mu_i, \sigma \sim N(\mu_i, \sigma^2)$ truncated to $`[z_{\text{lower},i}, z_{\text{upper},i})`$, then updates $(\mu, \sigma)$ from $\phi(z_i^\ast; \mu_i, \sigma^2)$ as if $z^\ast$ were observed. Weighting the density on the $z$ scale gives
+$$\left(\int_{z_{\text{lower},i}}^{z_{\text{upper},i}} \phi(z; \mu_i, \sigma^2)\thinspace dz\right)^{\tilde w_i} \neq \int_{z_{\text{lower},i}}^{z_{\text{upper},i}} \phi(z; \mu_i, \sigma^2)^{\tilde w_i}\thinspace dz$$
 
-$$\ell^{z}_w(\theta) = \sum_i w_i \log \phi(z_i; \mu_i, \sigma^2) = -\Big(\sum_i w_i\Big)\log\sigma - \frac{\sum_i w_i}{2}\log(2\pi) - \frac{1}{2\sigma^2}\sum_i w_i (z_i - \mu_i)^2,$$
+so weighting on the latent scale does not reproduce $L_{\tilde w}$ exactly.
 
-whereas the model assumed by `dbarts(weights = w)`, $\varepsilon_i \sim N(0, \sigma^2/w_i)$, gives
+### Why weights cannot simply be passed to `dbarts()`
 
-$$\sum_{i=1}^{n} \log \phi(z_i; \mu_i, \sigma^2/w_i) = -n\log\sigma + \frac{1}{2}\sum_i \log w_i - \frac{n}{2}\log(2\pi) - \frac{1}{2\sigma^2}\sum_i w_i (z_i - \mu_i)^2.$$
+Even on the latent scale, the weighted density is not the model `dbarts(weights = w)` assumes. With $\mu_i := \mu(x_i)$, the desired weighted log-density is
 
-The quadratic terms match, but the coefficients of $\log\sigma$ differ: $\sum_i w_i$ versus $n$.
+$$\ell^{z}_{w}(\theta) = \sum_{i=1}^{n} w_i \log \phi(z_i; \mu_i, \sigma^2) = -\Big(\sum_i w_i\Big)\log\sigma - \frac{\sum_i w_i}{2}\log(2\pi) - \frac{1}{2\sigma^2}\sum_i w_i (z_i - \mu_i)^2$$
 
-In addition, $`\ell^{z}_w(\theta)`$ on the $z$ scale is not the same as $`\ell_w(\theta)`$ on the $y$ scale. When $w \equiv 1$, integrating the latent density over the interval recovers the $y$-scale likelihood exactly:
+`dbarts(weights = w)` instead assumes $\varepsilon_i \sim N(0, \sigma^2/w_i)$, whose log-likelihood summed over all $i$ is
 
-```math
-\int_{z_{\text{lower},i}}^{z_{\text{upper},i}} \phi(z; \mu_i, \sigma^2)\, dz = \Phi\Big(\frac{z_{\text{upper},i} - \mu_i}{\sigma}\Big) - \Phi\Big(\frac{z_{\text{lower},i} - \mu_i}{\sigma}\Big)
-```
+$$\sum_{i=1}^{n} \log \phi(z_i; \mu_i, \sigma^2/w_i) = -n\log\sigma + \frac{1}{2}\sum_i \log w_i - \frac{n}{2}\log(2\pi) - \frac{1}{2\sigma^2}\sum_i w_i (z_i - \mu_i)^2$$
 
-Raising a density to a power does not commute with integration, however:
+The quadratic terms are identical, so the $\mu$ update of `dbarts` already matches. The coefficients of $\log\sigma$ differ, however, $\sum_i w_i$ in the desired log-density versus $n$ in `dbarts`, so the $\sigma$ update does not match for arbitrary weights. Normalizing to $\tilde w$ (with $\sum_i \tilde w_i = n$) removes this mismatch; see the relation to the pseudo-likelihood below.
 
-$$\left(\int_{z_{\text{lower},i}}^{z_{\text{upper},i}} \phi(z; \mu_i, \sigma^2)\thinspace dz\right)^{w_i} \neq \int_{z_{\text{lower},i}}^{z_{\text{upper},i}} \phi(z; \mu_i, \sigma^2)^{w_i}\thinspace dz.$$
+## Proposed approach: precision weights on the latent scale
 
-So once $w \not\equiv 1$, the $z$-scale target is not guaranteed to match $\ell_w(\theta)$. The consequences differ for $\mu$ and $\sigma$:
+**Model.** Give each latent error a weighted variance:
 
-- **$\mu \mid z^\ast, \sigma$:** with $\sigma$ fixed, $`\ell^{z}_w`$ depends on the data only through $`\sum_i w_i (z_i^\ast - \mu_i)^2`$, which `dbarts(weights = w)` already uses. The $\mu$ update needs nothing beyond `dbarts`.
-- **$\sigma \mid z^\ast, \mu$:** the $\log\sigma$ coefficient differs from that of `dbarts` (see Additional thoughts, point 1).
+$$z_i = \mu(x_i) + \varepsilon_i, \qquad \varepsilon_i \sim N(0, \sigma^2/\tilde w_i), \qquad y_i = j \iff z_i \in [z_{\text{lower},i},\ z_{\text{upper},i})$$
 
-## Proposed solution
+This is exactly the model `dbarts(weights = w_tilde)` fits on $z$ ($y \mid x \sim N(f(x), \sigma^2/w)$; [dbarts docs](https://rdrr.io/cran/dbarts/man/bart.html)).
 
-One option is to sample $\sigma$ directly from $\ell_w(\theta)$ rather than on the latent scale, as `bart_star()` does for the Box-Cox $\lambda$ in Block 3:
+**Gibbs sampler.** The joint target is $`\pi(\mu)\thinspace\pi(\sigma)\prod_i \phi(z_i; \mu_i, \sigma^2/\tilde w_i)\thinspace 1\lbrace z_i \in [z_{\text{lower},i}, z_{\text{upper},i})\rbrace`$, with full conditionals:
 
-$$\pi(\sigma \mid y, \mu, w) \propto \exp\lbrace\ell_w(\sigma)\rbrace\thinspace \pi(\sigma),$$
+- **Block 1:** $z_i \mid y_i, \mu_i, \sigma \sim N(\mu_i, \sigma^2/\tilde w_i)$ truncated to $`[z_{\text{lower},i}, z_{\text{upper},i})`$.
+- **Block 2:** the $(\mu, \sigma)$ update of `dbarts(weights = w_tilde)`, unmodified.
 
-evaluated with `logLikeRcpp` / `logLikePointRcpp`, with each term weighted by $w_i$ and $\pi(\sigma)$ the usual prior. This should cost no more than the $\lambda$ update. The $\mu$ update via `dbarts` would stay unmodified. The idea is not to redesign `dbarts`'s internal steps, only to change how $\mu$ and $\sigma$ are updated. See Additional thoughts, point 3, for a caveat.
+Keeping Block 1 at variance $\sigma^2$ while passing weights to `dbarts` would not be a Gibbs sampler for any joint distribution.
 
-On $g$, the same distinction applies to any transformation fitted from $z^\ast$. The Box-Cox $\lambda$ is already updated from the exact interval likelihood, so it only needs per-observation weights $w_i$, as for $\sigma$ above. The one-time CDF-based estimators (`np`, `pois`, `neg-bin`) are fitted before the sampler starts, from the raw counts rather than $z^\ast$, so this issue does not affect them. Their estimation should still use $w_i$, e.g. through a weighted empirical CDF. *This can be left for later work. How sample weights combine with offsets is also an interesting question for later.*
+**Exact target.** Integrating out $z$, the sampler targets the proper likelihood
 
-**Some remarks & connection with offsets:**
+$$L(\theta) = \prod_{i=1}^{n}\left[\Phi\left(\frac{\sqrt{\tilde w_i}\thinspace(z_{\text{upper},i} - \mu_i)}{\sigma}\right) - \Phi\left(\frac{\sqrt{\tilde w_i}\thinspace(z_{\text{lower},i} - \mu_i)}{\sigma}\right)\right]$$
 
-**1. Normalize the weights.** Savitsky & Toth (2016) scale the weights to sum to the sample size:
+i.e. a STAR model with heteroscedastic latent errors.
 
-$$\tilde w_i = \frac{n\thinspace w_i}{\sum_j w_j}, \qquad \sum_i \tilde w_i = n.$$
+**Relation to the pseudo-likelihood.** For each $i$,
 
-Without this, $\sum_i w_i$ (often of the order of the population size) acts as the effective sample size and the pseudo-posterior is far too concentrated. With $\tilde w$, the two $\log\sigma$ coefficients above coincide ($\sum_i \tilde w_i = n$). $`\ell^{z}_{\tilde w}`$ and the `dbarts` log-likelihood then differ only by the constant $\frac{1}{2}\sum_i \log \tilde w_i$, so **the `dbarts` update of $\sigma$ is already correct on the $z$ scale**. This also mirrors the geometric-mean normalization in the offsets.
+$$\phi(z; \mu, \sigma^2)^{w} = w^{-1/2}\thinspace(2\pi\sigma^2)^{(1-w)/2}\thinspace\phi(z; \mu, \sigma^2/w)$$
 
-**2. Block 1 must use the weighted variance.** The joint $z$-scale target $\prod_i \phi(z_i; \mu_i, \sigma^2)^{\tilde w_i}\thinspace 1\lbrace z_i \in [z_{\text{lower},i}, z_{\text{upper},i})\rbrace$ has full conditional
+Taking the product over $i$, the extra factor is proportional to $\sigma^{\thinspace n - \sum_i \tilde w_i} = 1$. So, **because the weights are normalized**, the weighted latent density $\prod_i \phi(z_i;\mu_i,\sigma^2)^{\tilde w_i}$ and the `dbarts` model agree up to a constant, and the `dbarts` update of $\sigma$ is correct. On the $y$ scale, $L(\theta)$ coincides with $L_{\tilde w}(\theta)$ (up to a constant) when the intervals are narrow relative to $\sigma$, i.e. for large counts, where both reduce to weighted least squares on $z$. They differ for small counts and zeros, which matters for bird data. Weights therefore act as **precision weights**: higher-weight sites are modelled as less noisy on the latent scale. This is an approximation to the pseudo-posterior, not the pseudo-posterior itself.
 
-$$z_i \mid y_i, \mu_i, \sigma \sim N(\mu_i, \sigma^2/\tilde w_i) \text{ truncated to } [z_{\text{lower},i}, z_{\text{upper},i}).$$
+**Code changes.** Current idea might require very little new code, because the helpers below already accept a per-observation `sigma` vector:
 
-Keeping Block 1 at variance $\sigma^2$ while passing `weights` to `dbarts` does not give a Gibbs sampler for any joint distribution. With the weighted variance, integrating out $z$ shows that the sampler **exactly** targets
+| Location | Change |
+|---|---|
+| Arguments | new `weights` (default 1), checked as finite and $> 0$, normalized to `w_tilde = n*w/sum(w)` |
+| `dbarts()` | `weights = w_tilde` |
+| Block 1 (`rtruncnormRcpp`) | `sigma = params$sigma/sqrt(w_tilde)` |
+| Block 3, Box–Cox $\lambda$ (`logLikeRcpp`) | `sigma = params$sigma/sqrt(w_tilde)`, so that $\lambda$ targets the same joint distribution |
+| Pointwise log-likelihood / WAIC (`logLikePointRcpp`) | `sigma = params$sigma/sqrt(w_tilde)` |
+| Prediction and `fitted.values` | `params$sigma` (i.e. $w = 1$) for population-level predictions, since the weights describe the sampling design, not outcome precision; `params$sigma/sqrt(w_tilde)` only for posterior predictive checks on the training data |
 
-$$L(\theta) = \prod_{i=1}^{n}\left[\Phi\left(\frac{\sqrt{\tilde w_i}\thinspace(z_{\text{upper},i} - \mu_i)}{\sigma}\right) - \Phi\left(\frac{\sqrt{\tilde w_i}\thinspace(z_{\text{lower},i} - \mu_i)}{\sigma}\right)\right],$$
+## Transformations and offsets
 
-i.e. a STAR model with heteroscedastic errors $\varepsilon_i \sim N(0, \sigma^2/\tilde w_i)$. This is a proper likelihood and needs almost no new code: `dbarts(weights = w_tilde)`, and `sigma = params$sigma/sqrt(w_tilde)` in `rtruncnormRcpp`, `logLikeRcpp` and `logLikePointRcpp`. All of these already accept a per-observation `sigma` vector. It coincides with the pseudo-likelihood $\prod_i p_i^{\tilde w_i}$ when the intervals are narrow relative to $\sigma$ (large counts, where both reduce to weighted least squares on $z$). It differs for small counts and zeros, which matters for bird data.
-
-**3. Caveat on the proposed $\sigma$ step.** Sampling $\lambda$ from the interval likelihood is valid because it is a partially collapsed Gibbs step: $\lambda \mid \mu, \sigma, y$ (with $z$ integrated out) and $z \mid \lambda, \mu, \sigma, y$ are conditionals of the *same* joint distribution. With non-integer weights, $\prod_i p_i^{w_i}$ has no latent - $z$ representation whose $\mu$-conditional is the `dbarts` update. Combining the `dbarts` $\mu$ step ($z$ - scale target) with a $y$ - scale $\sigma$ step therefore mixes two targets, and the chain is not guaranteed to converge to either. In practice it would also require overriding the $\sigma$ that `dbarts` draws internally in `sampler$run()`.
-
-**4. Exact benchmark with no new code.** For integer weights, $p_i^{w_i}$ is the likelihood of $w_i$ independent copies of observation $i$. Rounding $\tilde w_i$ to integers and replicating rows, then running the **unmodified** `bart_star()`, gives the exact pseudo-posterior for the rounded weights. This is a useful reference for judging the precision-weight approximation in point 2.
-
-**5. Uncertainty.** Even with normalized weights, pseudo-posterior credible intervals are not design-calibrated and tend to under-cover under informative or clustered sampling. [Williams & Savitsky (2021)](https://doi.org/10.1111/insr.12376) propose a fast post-processing (sandwich-type) correction of the MCMC draws (I have not yet delved into this part).
-
-**6. Transformation and offsets.** For `np`, a weighted ECDF $`\hat F_w(t) = \sum_i \tilde w_i 1\{ y_i \le t\} / \sum_i \tilde w_i`$ can be approximated without changing `g_cdf()` by passing replicated counts, `g_cdf(rep(y, round(k * w_tilde)))`. For `pois` and `neg-bin`, use weighted moments. Offsets and weights act on different parts of the model: offsets move the cut points to $a_j/\tilde e_i$, while weights scale the latent variance to $\sigma^2/\tilde w_i$. They combine directly: Block 1 draws $N(\mu_i, \sigma^2/\tilde w_i)$ truncated to $`[g(a_{y_i}/\tilde e_i),\, g(a_{y_i+1}/\tilde e_i))`$.
+- **`box-cox`:** handled by the $\lambda$ row in the code-changes table.
+- **`np`, `pois`, `neg-bin`:** $g$ is fitted once, before the sampler. A weighted fit can be approximated without changing `g_cdf()` by replicating the values passed to it, e.g. `g_cdf(rep(v, round(k * w_tilde)), transformation)` with $k$ large. This gives a weighted empirical CDF for `np` and weighted moments for `pois` and `neg-bin`, and $k$ does not matter here because the CDF and moments are normalized. Here $v = y$, or $v = M y/e$ for `np` with offsets.
+- **`ispline`:** not considered.
+- **Offsets:** offsets and weights act on different parts of the model. Offsets move the cut points to $a_j/e_i$; weights scale the latent variance to $\sigma^2/\tilde w_i$. They combine directly: Block 1 draws $N(\mu_i, \sigma^2/\tilde w_i)$ truncated to $[g(a_{y_i}/e_i),\ g(a_{y_i+1}/e_i))$.
 
 ## References
 
 - Savitsky, T. D., & Toth, D. (2016). Bayesian estimation under informative sampling. *Electronic Journal of Statistics*, 10(1), 1677–1708.
-- Williams, M. R., & Savitsky, T. D. (2021). Uncertainty estimation for pseudo-Bayesian inference under complex sampling. *International Statistical Review*, 89(1), 72–107.
