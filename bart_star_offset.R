@@ -1,4 +1,3 @@
-#----------------------------------------------------------------------------
 #' MCMC Algorithm for BART-STAR, with known offsets/exposures
 #'
 #' Run the MCMC algorithm for a BART model for count-valued responses using STAR,
@@ -24,10 +23,12 @@
 #' \item "log" (log transformation)
 #' \item "sqrt" (square root transformation)
 #' \item "np" (nonparametric transformation estimated from empirical CDF; with
-#' offsets, the count-scale estimate is evaluated at the reference exposure
-#' \code{e_bar}, the geometric mean of \code{offsets})
-#' \item "pois" (transformation for moment-matched marginal Poisson CDF)
-#' \item "neg-bin" (transformation for moment-matched marginal Negative Binomial CDF)
+#' offsets, the empirical CDF of the observed densities \code{y/offsets})
+#' \item "pois" (transformation for moment-matched marginal Poisson CDF; with
+#' offsets, evaluated at the reference exposure \code{e_bar}, the geometric
+#' mean of \code{offsets})
+#' \item "neg-bin" (transformation for moment-matched marginal Negative Binomial
+#' CDF; with offsets, as for "pois")
 #' \item "box-cox" (box-cox transformation with learned parameter)
 #' \item "ispline" (transformation is modeled as unknown, monotone function
 #' using I-splines; not available with non-unit offsets)
@@ -146,13 +147,28 @@ bart_star = function(y,
   
   if(transform_family == 'cdf'){
     
-    # OFFSETS: g_cdf() is estimated from the counts y, i.e. on the scale of
-    # y* at a typical exposure. Map the density scale y*/e to that scale with the
-    # reference exposure e_bar (geometric mean of the offsets): g(t) = g_y(e_bar*t).
-    # Only this call changes; e_bar = 1 (and g = g_y) when offsets = 1.
-    e_bar = exp(mean(log(offsets)))
-    g_y = g_cdf(y = y, distribution = transformation)
-    g = function(t) g_y(e_bar*t)
+    if(transformation == 'np'){
+      # OFFSETS: estimate g on the density scale, from the empirical CDF of the
+      # observed densities d = y/e, with the unmodified g_cdf(). g_cdf() sets
+      # g(t) = qnorm(F(t - 1)) at the data points, where 't - 1' means 'strictly
+      # below t' for integer counts. Passing M*d with M*(min gap of d) >= 2 keeps
+      # this meaning for non-integer densities; g(t) = g_M(M*t) undoes the scaling.
+      # M = 1 (and g = g_cdf(y)) whenever the densities are >= 1 apart, e.g. offsets = 1.
+      d = signif(y/offsets, 12)
+      d_unique = sort(unique(d))
+      d_gap = if(length(d_unique) > 1) min(diff(d_unique)) else 1
+      M = if(d_gap >= 1) 1 else 2/d_gap
+      g_M = g_cdf(y = M*d, distribution = 'np')
+      g = function(t) g_M(M*t)
+    } else {
+      # OFFSETS: 'pois'/'neg-bin' are count distributions, so g_cdf() is estimated
+      # from the counts y and mapped to the density scale y*/e with the reference
+      # exposure e_bar (geometric mean of the offsets): g(t) = g_y(e_bar*t).
+      # e_bar = 1 (and g = g_y) when offsets = 1.
+      e_bar = exp(mean(log(offsets)))
+      g_y = g_cdf(y = y, distribution = transformation)
+      g = function(t) g_y(e_bar*t)
+    }
     
     # Define the grid for approximations using equally-spaced + quantile points
     # OFFSETS: on the offset-adjusted scale y/e, the domain of g's argument
@@ -170,7 +186,7 @@ bart_star = function(y,
   # Random initialization for z_star (OFFSETS: original rule on the scale y*/e):
   z_star = g((y + abs(rnorm(n = n)))/offsets)
   
-  # Now initialize the model: BART
+  # Now initialize the model: BART!
   
   # Initialize the dbarts() object:
   control = dbarts::dbartsControl(n.chains = 1, n.burn = 0, n.samples = 1,
