@@ -1,46 +1,40 @@
-#' MCMC Algorithm for BART-STAR, with known offsets/exposures
+#' MCMC Algorithm for BART-STAR
 #'
-#' Run the MCMC algorithm for a BART model for count-valued responses using STAR,
-#' with optional known offsets (exposures) \code{e_i > 0}. The model is
-#' \code{y = floor(y*)}, \code{g(y*/e) = mu(x) + eps}, so mu and sigma are on the
-#' scale of the transformed density \code{g(y*/e)}. With the default
-#' \code{offsets = 1}, this function runs exactly the same computations as the
-#' original \code{bart_star()}.
+#' Run the MCMC algorithm for a BART model for count-valued responses using STAR.
+#' The transformation can be known (e.g., log or sqrt) or unknown
+#' (Box-Cox or estimated nonparametrically) for greater flexibility.
 #'
 #' @param y \code{n x 1} vector of observed counts
 #' @param X \code{n x p} matrix of predictors
 #' @param X_test \code{n_test x p} matrix of predictors for test data
 #' @param y_test \code{n_test x 1} vector of the test data responses (used for
 #' computing log-predictive scores)
-#' @param offsets \code{n x 1} vector (or scalar) of known offsets/exposures
-#' \code{e_i > 0} for the training data; default is 1 (no offset)
-#' @param offsets_test \code{n_test x 1} vector (or scalar) of known
-#' offsets/exposures for the test data; default is 1 (e.g., predictions per
-#' unit exposure). Ignored if \code{X_test = NULL}
+#' @param offsets \code{n x 1} vector (or scalar) of known offsets (exposures)
+#' \code{e_i > 0} for the training data; default is 1 (no offsets). See Details.
+#' @param offsets_test \code{n_test x 1} vector (or scalar) of known offsets for
+#' the test data; default is 1, i.e., predictions at unit exposure. Ignored if
+#' \code{X_test = NULL}
 #' @param transformation transformation to use for the latent process; must be one of
 #' \itemize{
 #' \item "identity" (identity transformation)
 #' \item "log" (log transformation)
 #' \item "sqrt" (square root transformation)
-#' \item "np" (nonparametric transformation estimated from empirical CDF; with
-#' offsets, the empirical CDF of the observed densities \code{y/offsets})
-#' \item "pois" (transformation for moment-matched marginal Poisson CDF; with
-#' offsets, evaluated at the reference exposure \code{e_bar}, the geometric
-#' mean of \code{offsets})
-#' \item "neg-bin" (transformation for moment-matched marginal Negative Binomial
-#' CDF; with offsets, as for "pois")
+#' \item "np" (nonparametric transformation estimated from empirical CDF)
+#' \item "pois" (transformation for moment-matched marginal Poisson CDF)
+#' \item "neg-bin" (transformation for moment-matched marginal Negative Binomial CDF)
 #' \item "box-cox" (box-cox transformation with learned parameter)
 #' \item "ispline" (transformation is modeled as unknown, monotone function
-#' using I-splines; not available with non-unit offsets)
+#' using I-splines)
 #' }
 #' @param y_max a fixed and known upper bound for all observations; default is \code{Inf}
 #' @param n.trees number of trees to use in BART; default is 200
 #' @param sigest positive numeric estimate of the residual standard deviation (see ?bart)
 #' @param sigdf  degrees of freedom for error variance prior (see ?bart)
 #' @param sigquant quantile of the error variance prior that the rough estimate (sigest)
-#' is placed at (see ?bart)
-#' @param k the number of prior standard deviations E(Y|x) = f(x) is away from +/- 0.5
-#' (see ?bart)
+#' is placed at. The closer the quantile is to 1, the more aggressive the fit will be (see ?bart)
+#' @param k the number of prior standard deviations E(Y|x) = f(x) is away from +/- 0.5.
+#' The response is internally scaled to range from -0.5 to 0.5.
+#' The bigger k is, the more conservative the fitting will be (see ?bart)
 #' @param power power parameter for tree prior (see ?bart)
 #' @param base  base parameter for tree prior (see ?bart)
 #' @param nsave number of MCMC iterations to save
@@ -51,10 +45,141 @@
 #' the expected counts, E(y), which may be slow to compute
 #' @param verbose logical; if TRUE, print time remaining
 #'
-#' @return the same list as the original \code{bart_star()}. All count-scale
-#' quantities (\code{post.pred}, \code{post.fitted.values}, ...) are at the
-#' supplied exposures: \code{offsets} for the training data and
-#' \code{offsets_test} for the test data.
+#' @return a list with the following elements:
+#' \itemize{
+#' \item \code{post.pred}: draws from the posterior predictive distribution of \code{y}
+#' \item \code{post.sigma}: draws from the posterior distribution of \code{sigma}
+#' \item \code{post.log.like.point}: draws of the log-likelihood for each of the \code{n} observations
+#' \item \code{WAIC}: Widely-Applicable/Watanabe-Akaike Information Criterion
+#' \item \code{p_waic}: Effective number of parameters based on WAIC
+#' \item \code{post.pred.test}: draws from the posterior predictive distribution at the test points \code{X_test}
+#' (\code{NULL} if \code{X_test} is not given)
+#' \item \code{post.fitted.values.test}: posterior draws of the conditional mean at the test points \code{X_test}
+#' (\code{NULL} if \code{X_test} is not given)
+#' \item \code{post.mu.test}: draws of the conditional mean of z_star at the test points \code{X_test}
+#' (\code{NULL} if \code{X_test} is not given)
+#' \item \code{post.log.pred.test}: draws of the log-predictive distribution for each of the \code{n_test} test cases
+#' (\code{NULL} if \code{X_test} is not given)
+#' \item \code{fitted.values}: the posterior mean of the conditional expectation of the counts \code{y}
+#' (\code{NULL} if \code{save_y_hat=FALSE})
+#' \item \code{post.fitted.values}: posterior draws of the conditional mean of the counts \code{y}
+#' (\code{NULL} if \code{save_y_hat=FALSE})
+#' }
+#' In the case of \code{transformation="ispline"}, the list also contains
+#' \itemize{
+#' \item \code{post.g}: draws from the posterior distribution of the transformation \code{g}
+#' \item \code{post.sigma.gamma}: draws from the posterior distribution of \code{sigma.gamma},
+#' the prior standard deviation of the transformation g() coefficients
+#' }
+#' If \code{transformation="box-cox"}, then the list also contains
+#' \itemize{
+#' \item \code{post.lambda}: draws from the posterior distribution of \code{lambda}
+#' }
+#'
+#' @details STAR defines a count-valued probability model by
+#' (1) specifying a Gaussian model for continuous *latent* data and
+#' (2) connecting the latent data to the observed data via a
+#' *transformation and rounding* operation. Here, the model in (1)
+#' is a Bayesian additive regression tree (BART) model.
+#'
+#' Posterior and predictive inference is obtained via a Gibbs sampler
+#' that combines (i) a latent data augmentation step (like in probit regression)
+#' and (ii) an existing sampler for a continuous data model.
+#'
+#' There are several options for the transformation. First, the transformation
+#' can belong to the *Box-Cox* family, which includes the known transformations
+#' 'identity', 'log', and 'sqrt', as well as a version in which the Box-Cox parameter
+#' is inferred within the MCMC sampler ('box-cox'). Second, the transformation
+#' can be estimated (before model fitting) using the empirical distribution of the
+#' data \code{y}. Options in this case include the empirical cumulative
+#' distribution function (CDF), which is fully nonparametric ('np'), or the parametric
+#' alternatives based on Poisson ('pois') or Negative-Binomial ('neg-bin')
+#' distributions. For the parametric distributions, the parameters of the distribution
+#' are estimated using moments (means and variances) of \code{y}. Third, the transformation can be
+#' modeled as an unknown, monotone function using I-splines ('ispline'). The
+#' Robust Adaptive Metropolis (RAM) sampler is used for drawing the parameter
+#' of the transformation function.
+#'
+#' \strong{Offsets.} With known exposures \code{e_i > 0} (\code{offsets}), the
+#' transformation acts on the latent count per unit exposure:
+#' \code{y_i = floor(y_i*)} and \code{g(y_i*/e_i) = mu(x_i) + eps_i}, so \code{mu}
+#' and \code{sigma} are on the scale of the transformed density \code{g(y*/e)}.
+#' The offsets enter only through the observation-specific cut points
+#' \code{a_j/e_i}; for \code{transformation = 'log'} this is the usual
+#' log-offset. For 'np', 'pois' and 'neg-bin', the transformation is estimated
+#' on the density scale: 'np' uses the empirical CDF of \code{y/offsets};
+#' 'pois' and 'neg-bin' use the moment-matched count CDF at the reference
+#' exposure given by the geometric mean of \code{offsets}. 'ispline' is not
+#' available with non-unit offsets. All count-scale outputs (\code{post.pred},
+#' \code{post.fitted.values}, ...) are at the supplied exposures: \code{offsets}
+#' for the training data and \code{offsets_test} for the test data. With
+#' \code{offsets = 1}, the computations are those of the original sampler.
+#'
+#' @examples
+#' \donttest{
+#' # Simulate data with count-valued response y:
+#' sim_dat = simulate_nb_friedman(n = 100, p = 5)
+#' y = sim_dat$y; X = sim_dat$X
+#'
+#' if (requireNamespace("dbarts", quietly = TRUE)) {
+#'   # BART-STAR with log-transformation:
+#'   fit_log = bart_star(y = y, X = X, transformation = 'log',
+#'                       save_y_hat = TRUE, nburn=1000, nskip=0)
+#'
+#'   # Fitted values
+#'   plot_fitted(y = sim_dat$Ey,
+#'               post_y = fit_log$post.fitted.values,
+#'               main = 'Fitted Values: BART-STAR-log')
+#'
+#'   # WAIC for BART-STAR-log:
+#'   fit_log$WAIC
+#'
+#'   # MCMC diagnostics:
+#'   plot(as.ts(fit_log$post.fitted.values[,1:10]))
+#'
+#'   # Posterior predictive check:
+#'   hist(apply(fit_log$post.pred, 1,
+#'              function(x) mean(x==0)), main = 'Proportion of Zeros', xlab='');
+#'   abline(v = mean(y==0), lwd=4, col ='blue')
+#'
+#'   # BART-STAR with nonparametric transformation:
+#'   fit = bart_star(y = y, X = X,
+#'                        transformation = 'np', save_y_hat = TRUE)
+#'
+#'   # Fitted values
+#'   plot_fitted(y = sim_dat$Ey,
+#'               post_y = fit$post.fitted.values,
+#'               main = 'Fitted Values: BART-STAR-np')
+#'
+#'   # WAIC for BART-STAR-np:
+#'   fit$WAIC
+#'
+#'   # MCMC diagnostics:
+#'   plot(as.ts(fit$post.fitted.values[,1:10]))
+#'
+#'   # Posterior predictive check:
+#'   hist(apply(fit$post.pred, 1,
+#'              function(x) mean(x==0)), main = 'Proportion of Zeros', xlab='');
+#'   abline(v = mean(y==0), lwd=4, col ='blue')
+#'
+#'# BART-STAR with known offsets (exposures) e_i:
+#' e = runif(length(y), min = 0.5, max = 5)
+#' y_e = rnbinom(length(y), size = 1, mu = e*sim_dat$Ey)  # counts proportional to exposure
+#' fit_off = bart_star(y = y_e, X = X, offsets = e,
+#'                    X_test = X, offsets_test = 1,
+#'                    transformation = 'np', save_y_hat = TRUE)
+#'
+#'   # Expected counts at the observed exposures:
+#'   plot_fitted(y = e*sim_dat$Ey,
+#'               post_y = fit_off$post.fitted.values,
+#'               main = 'Fitted Values: BART-STAR-np with offsets')
+#'
+#'   # Expected counts at unit exposure (density per unit effort):
+#'   plot_fitted(y = sim_dat$Ey,
+#'               post_y = fit_off$post.fitted.values.test,
+#'               main = 'Fitted Values at e = 1')
+#' }
+#' }
 #'
 #' @export
 bart_star = function(y,
@@ -151,7 +276,7 @@ bart_star = function(y,
       # OFFSETS: estimate g on the density scale, from the empirical CDF of the
       # observed densities d = y/e, with the unmodified g_cdf(). g_cdf() sets
       # g(t) = qnorm(F(t - 1)) at the data points, where 't - 1' means 'strictly
-      # below t' for integer counts. Passing M*d with M*(min gap of d) >= 2 keeps
+      # below t' for integer counts. Passing M*d with M*(min gap of d) >= 1 (= 2 when rescaled) keeps
       # this meaning for non-integer densities; g(t) = g_M(M*t) undoes the scaling.
       # M = 1 (and g = g_cdf(y)) whenever the densities are >= 1 apart, e.g. offsets = 1.
       d = signif(y/offsets, 12)
@@ -243,6 +368,18 @@ bart_star = function(y,
     post.lambda = numeric(nsave)
   } else post.lambda = NULL
   
+  # Conditional expectation E(y | mu, sigma, e) (OFFSETS): tail sum lo + sum_{j=lo+1}^{hi} Pr(y >= j),
+  # with lo, hi the 0.0001 and 0.9999 quantiles of y at exposure e (see README_offset.md).
+  expect_y = function(mu, e){
+    hi = ceiling(round_floor(g_inv(qnorm(0.9999, mean = mu, sd = params$sigma))*e, y_max = y_max))
+    hi = pmin(hi, ceiling(2*max(y/offsets)*e)) # cap, as in the original (computing time)
+    lo = pmin(round_floor(g_inv(qnorm(0.0001, mean = mu, sd = params$sigma))*e, y_max = y_max), hi)
+    len = hi - lo; id = rep(seq_along(mu), len); j = sequence(len, from = lo + 1)
+    p_ge = pnorm(g(j/e[id]), mean = mu[id], sd = params$sigma, lower.tail = FALSE)
+    cs = c(0, cumsum(p_ge)); ends = cumsum(len)
+    lo + cs[ends + 1] - cs[ends - len + 1]
+  }
+  
   # Total number of MCMC simulations:
   nstot = nburn+(nskip+1)*(nsave)
   skipcount = 0; isave = 0 # For counting
@@ -300,21 +437,8 @@ bart_star = function(y,
         # Posterior predictive distribution (OFFSETS: y = h(e * g^{-1}(z))):
         post.pred[isave,] = round_floor(g_inv(rnorm(n = n, mean = params$mu, sd = params$sigma))*offsets, y_max=y_max)
         
-        # Conditional expectation:
-        if(save_y_hat){
-          Jmax = ceiling(round_floor(g_inv(
-            qnorm(0.9999, mean = params$mu, sd = params$sigma))*offsets, y_max=y_max))
-          # To avoid excessive computation times, cap at 2*max(y) (OFFSETS: at exposure e_i)
-          Jmax = pmin(Jmax, ceiling(2*max(y/offsets)*offsets))
-          # OFFSETS: grid g(a_j/e) is observation-specific; one call per distinct offset
-          for(i_e in split(1:n, offsets)){
-            Jmaxmax = max(Jmax[i_e]); e = offsets[i_e[1]]
-            post.fitted.values[isave, i_e] = countSTAR:::expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax)/e),
-                                                                           g_a_jp1 = g(a_j(1:(Jmaxmax + 1))/e),
-                                                                           mu = params$mu[i_e], sigma = rep(params$sigma, length(i_e)),
-                                                                           Jmax = Jmax[i_e])
-          }
-        }
+        # Conditional expectation (OFFSETS: at exposure e_i; see expect_y() above):
+        if(save_y_hat) post.fitted.values[isave,] = expect_y(mu = params$mu, e = offsets)
         
         if(include_test){
           # Conditional of the z_star at test points (useful for predictive distribution later)
@@ -322,24 +446,13 @@ bart_star = function(y,
           
           # Posterior predictive distribution at test points (OFFSETS: at offsets_test):
           post.pred.test[isave,] = round_floor(g_inv(rnorm(n = n_test, mean = samp$test, sd = params$sigma))*offsets_test, y_max=y_max)
-          # Conditional expectation at test points:
-          Jmax = ceiling(round_floor(g_inv(
-            qnorm(0.9999, mean = samp$test, sd = params$sigma))*offsets_test, y_max=y_max))
-          # To avoid excessive computation times, cap at 2*max(y) (OFFSETS: at exposure e_i)
-          Jmax = pmin(Jmax, ceiling(2*max(y/offsets)*offsets_test))
-          # OFFSETS: grid g(a_j/e) is observation-specific; one call per distinct offset
-          for(i_e in split(1:n_test, offsets_test)){
-            Jmaxmax = max(Jmax[i_e]); e = offsets_test[i_e[1]]
-            post.fitted.values.test[isave, i_e] = countSTAR:::expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax)/e),
-                                                                                g_a_jp1 = g(a_j(1:(Jmaxmax + 1))/e),
-                                                                                mu = samp$test[i_e], sigma = rep(params$sigma, length(i_e)),
-                                                                                Jmax = Jmax[i_e])
-          }
+          # Conditional expectation at test points (OFFSETS: at offsets_test):
+          post.fitted.values.test[isave,] = expect_y(mu = samp$test, e = offsets_test)
           
-          # Test points for log-predictive score (OFFSETS: cut points a_j/e_i):
+          # Test points for log-predictive score (OFFSETS: cut points a_j/e_i; y_max as in training):
           if(!is.null(y_test))
-            post.log.pred.test[isave,] = countSTAR:::logLikePointRcpp(g_a_j = g(a_j(y_test)/offsets_test),
-                                                                      g_a_jp1 = g(a_j(y_test + 1)/offsets_test),
+            post.log.pred.test[isave,] = countSTAR:::logLikePointRcpp(g_a_j = g(a_j(y_test, y_max = y_max)/offsets_test),
+                                                                      g_a_jp1 = g(a_j(y_test + 1, y_max = y_max)/offsets_test),
                                                                       mu = samp$test,
                                                                       sigma = rep(params$sigma, n_test))
         }
