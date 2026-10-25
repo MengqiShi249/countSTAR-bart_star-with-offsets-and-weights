@@ -1,41 +1,15 @@
 # Simulation results: `bart_star()` with offsets
 
-All results and figures below are produced by **`simulation_full.R`**, which sources:
+All results and figures are produced by **`simulation_full.R`**, which sources:
 
 - `bart_star_offset.R`: `bart_star()` with the new `offsets` / `offsets_test` arguments. No `countSTAR` helper function is modified.
 - `helper_sim.R`: the three data-generating functions.
 
-`simulation_full.R` fits every scenario $\times$ transformation pair, prints the results tables, and draws the fitted-vs-truth and PPC plots. Figures are stored in `(i) data_offsets/<transformation>/` and `(ii) data_no/<transformation>/`, with identical file names across subfolders (`fr` / `im` / `ht` = friedman / imbalanced / heterogeneous). All transformations are included to test how robust the offset extension is, and how the choice of transformation affects it.
-
-## Model
-
-With known exposures $e_{i} > 0$, the offset STAR model is
-
-$$
-y_{i} = h(y_{i}^{\ast}), \qquad g\left(y_{i}^{\ast}/e_{i}\right) = \mu(x_{i}) + \varepsilon_{i}, \qquad \varepsilon_{i} \overset{iid}{\sim} N(0,\sigma^{2})
-$$
-
-where $\mu(\cdot)$ is a BART ensemble and $h$ is the floor operator: $y_{i} = j$ if and only if $a_{j} \le y_{i}^{\ast} < a_{j+1}$, with $a_{0} = -\infty$ and $a_{j} = j$ for $j \ge 1$. Writing $z_{i} = g(y_{i}^{\ast}/e_{i})$,
-
-$$
-y_{i} = j \iff z_{i} \in \big[g(a_{j}/e_{i}),\ g(a_{j+1}/e_{i}) \big)
-$$
-
-so the offset enters **only through the observation-specific cut points** $a_{j}/e_{i}$. For $g = \log$ this is the GLM log-offset, $\log y_{i}^{\ast} = \log e_{i} + \mu(x_{i}) + \varepsilon_{i}$. With $e_{i} \equiv 1$ the code performs exactly the computations of the original `bart_star()`.
-
-How each transformation is handled with offsets:
-
-| Type | Transformations | $g$ with offsets |
-|---|---|---|
-| Fixed | `identity`, `log`, `sqrt` | Box–Cox $g_{\lambda}$ applied to the density $y^{\ast}/e$ ($\lambda = 1, 0, 1/2$) |
-| Sampled | `box-cox` | $g_{\lambda}(y^{\ast}/e)$, with $\lambda$ slice-sampled each iteration (prior $N(1/2, 1)$ truncated to $[0, 3]$). The pilot MCMC used to calibrate the $\sigma$ prior runs only when $e \equiv 1$; with offsets, the $\sigma$ prior is calibrated from $\text{sd}\{g_{\lambda_{0}}((y+1)/e)\}$ at the random initial $\lambda_{0}$ |
-| Plug-in CDF | `np` | empirical CDF of the observed densities $y_{i}/e_{i}$ |
-| Plug-in CDF | `pois`, `neg-bin` | $g(t) = g_{y}(\bar{e}\, t)$, where $g_{y}$ is the moment-matched count CDF and $\bar{e}$ is the geometric mean of the $e_{i}$ |
-| — | `ispline` | not available with non-unit offsets; run in case (ii) only |
+`simulation_full.R` fits every scenario $\times$ transformation pair, prints the results tables, and draws the fitted-vs-truth and PPC plots. Figures are stored in `(i) data_offsets/<transformation>/` and `(ii) data_no/<transformation>/`, with identical file names across subfolders (`fr` / `im` / `ht` = friedman / imbalanced / heterogeneous).
 
 ## Simulation design
 
-**Data.** $n = 250$, $p = 6$, $x_{ij} \sim \text{Unif}(0, 1)$, and $Y_{i} \sim \text{NB}$ with mean $m_{i} = e_{i}\exp\{\eta(x_{i})\}$ and size $r$, so $\text{Var}(Y_{i}) = m_{i} + m_{i}^{2}/r$. Here $\eta(x)$ is the log mean per unit exposure. Smaller $r$ means stronger overdispersion, and $r \to \infty$ gives a Poisson. Below, $s(\cdot)$ standardises to sample mean 0 and SD 1 (R's `scale()`, computed over the $n$ simulated observations), and $\text{logit}^{-1}$ is the logistic function.
+**Data.** $n = 250$, $p = 6$, $x_{ij} \sim \text{Unif}(0, 1)$, and $Y_{i} \sim \text{NB}$ with mean $m_{i} = e_{i}\exp\{\eta(x_{i})\}$ and size $r$, so $\text{Var}(Y_{i}) = m_{i} + m_{i}^{2}/r$. Here $s(\cdot)$ standardises to mean 0 and SD 1 (R's `scale()`).
 
 | Scenario | $\eta(x)$ | $r$ | Zeros (case i) | Tests |
 |---|---|---|---|---|
@@ -43,22 +17,20 @@ How each transformation is handled with offsets:
 | `imbalanced` | $\log 0.2 + \log 20 \cdot \text{logit}^{-1}\{15(x_{1}-0.7)\}$ | 0.7 | 54.0% | zero-heavy counts |
 | `heterogeneous` | $\log 1.5 + \log 3 \cdot s(x_{1})$ | 0.7 if $x_{2} \le 0.5$, else 8 | 24.8% | group-varying overdispersion |
 
-Negative binomial counts with a log-exposure offset are a standard model for overdispersed counts with known effort. The data are not generated from a STAR model, so the simulation tests `bart_star()` under realistic misspecification.
-
 **Cases.**
 
-- **Case (i)**, real exposure heterogeneity: $e_{i} \sim \text{Unif}(0.5, 5)$, seed 1. Does modelling the offset help? (7 transformations; `ispline` is skipped.)
+- **Case (i)**, exposure heterogeneity: $e_{i} \sim \text{Unif}(0.5, 5)$, seed 1. Does modelling the offset help? (7 transformations; `ispline` is skipped.)
 - **Case (ii)**, no heterogeneity: $e_{i} \equiv 1$, seed 2. Does `offset = TRUE` reduce to `offset = FALSE`? (All 8 transformations.)
 
-In every cell `bart_star()` is fit twice on the **same** data. In the tables and plots, `offset = FALSE` means the default `offsets = 1` (the original model) and `offset = TRUE` means `offsets` $= e_{i}$. Each data set is seeded inside its generator, so the same two data sets per scenario are used for every transformation. MCMC settings: `nburn = 500`, `nsave = 1000`, `nskip = 0`, `n.trees = 75`, `save_y_hat = TRUE`. There is one data set and one chain per fit.
+In every cell, `bart_star()` is fit twice on the **same** data: `offset = FALSE` uses the default `offsets = 1` (the original model), and `offset = TRUE` uses `offsets` $= e_{i}$. MCMC settings: `nburn = 500`, `nsave = 1000`, `nskip = 0`, `n.trees = 75`, `save_y_hat = TRUE`. There is one data set and one chain per fit.
 
 ## Metrics and plots
 
 - **WAIC** (lower is better), from the pointwise log-likelihood of the observed counts. Both fits in a pair use the same counts, so their WAICs are comparable.
-- **RMSE to truth** (case i): $\big[n^{-1}\sum_{i=1}^{n}(\hat{y_i} - m_{i})^{2}\big]^{1/2}$, where $\hat{y_i}$ is the posterior mean of $\mathbb{E}(y_{i} \mid x_{i})$ under the fitted model (at exposure $e_{i}$ for `offset = TRUE`).
-- **Correlation** (case ii): RMSE and correlation between the two fits' $\hat{y}_{i}$.
-- **Fitted vs. truth**: $\hat{y_i}$ with 95% HPD intervals for $\mathbb{E}(y_{i})$, plotted against the true mean ($m_{i}$ in case i, $\exp\{\eta(x_{i})\}$ in case ii, labelled "Data Values"), with a 1:1 line.
-- **PPC, proportion of zeros**: histogram of the zero proportion across posterior predictive draws, with the observed proportion as a blue line.
+- **RMSE to truth** (case i): $[n^{-1}\sum_{i}(\hat{y_i} - m_{i})^{2}]^{1/2}$, where $\hat{y_i}$ is the posterior mean of $\mathbb{E}(y_{i} \mid x_{i})$ (at exposure $e_{i}$ for `offset = TRUE`).
+- **Agreement** (case ii): RMSE and correlation between the two fits' $\hat{y}_{i}$.
+- **Fitted vs. truth**: $\hat{y_i}$ with 95% HPD intervals, against the true mean ($m_{i}$ in case i, $\exp\{\eta(x_{i})\}$ in case ii), with a 1:1 line.
+- **PPC, proportion of zeros**: histogram over posterior predictive draws, with the observed proportion as a blue line.
 
 ## Results
 
@@ -73,71 +45,55 @@ In every cell `bart_star()` is fit twice on the **same** data. In the tables and
 | sqrt | 1551.5 | 1432.9 | −118.6 | 850.1 | 825.0 | −25.1 | 1347.9 | 1310.6 | −37.3 |
 | box-cox | 1410.4 | 1343.8 | −66.6 | 816.3 | 791.1 | −25.2 | 1300.2 | 1252.9 | −47.3 |
 | np | 1376.0 | 1312.3 | −63.8 | 792.3 | 806.0 | +13.7 | 1274.8 | 1247.4 | −27.5 |
-| pois | NaN | 1563.5 | NaN | 871.9 | 854.1 | −17.9 | 1400.9 | 1367.4 | −33.4 |
-| neg-bin | 1439.7 | 1356.2 | −83.5 | 825.3 | 812.9 | −12.5 | 1307.0 | 1269.9 | −37.0 |
+| pois | NaN | 1547.5 | NaN | 871.9 | 881.9 | +9.9 | 1400.9 | 1378.1 | −22.8 |
+| neg-bin | 1439.7 | 1368.3 | −71.4 | 825.3 | 857.2 | +31.9 | 1307.0 | 1295.2 | −11.7 |
 
 **Table 2: RMSE to truth** ($\Delta\%$ = relative change, TRUE vs. FALSE).
 
 | $g$ | friedman FALSE | friedman TRUE | friedman $\Delta\%$ | imbalanced FALSE | imbalanced TRUE | imbalanced $\Delta\%$ | heterogeneous FALSE | heterogeneous TRUE | heterogeneous $\Delta\%$ |
 |---|---|---|---|---|---|---|---|---|---|
 | identity | 18.81 | 15.77 | −16.2 | 2.679 | 2.295 | −14.3 | 6.533 | 6.222 | −4.8 |
-| log | 15.92 | 12.09 | −24.1 | 2.571 | 2.098 | −18.4 | 5.187 | 3.967 | −23.5 |
-| sqrt | 17.86 | 14.49 | −18.9 | 2.539 | 2.126 | −16.3 | 5.440 | 4.406 | −19.0 |
-| box-cox | 17.03 | 12.44 | −26.9 | 2.574 | 2.113 | −17.9 | 5.252 | 3.856 | −26.6 |
-| np | 15.16 | 12.36 | −18.5 | 2.509 | 2.200 | −12.3 | 5.190 | 3.856 | −25.7 |
-| pois | 16.32 | 14.47 | −11.3 | 2.557 | 2.098 | −18.0 | 5.963 | 5.118 | −14.2 |
-| neg-bin | 17.62 | 13.80 | −21.7 | 2.561 | 2.093 | −18.3 | 5.332 | 4.081 | −23.5 |
+| log | 15.92 | 12.07 | −24.2 | 2.571 | 2.088 | −18.8 | 5.187 | 3.907 | −24.7 |
+| sqrt | 17.86 | 14.49 | −18.9 | 2.539 | 2.125 | −16.3 | 5.440 | 4.406 | −19.0 |
+| box-cox | 17.03 | 12.41 | −27.1 | 2.574 | 2.107 | −18.1 | 5.252 | 3.834 | −27.0 |
+| np | 15.16 | 12.36 | −18.5 | 2.509 | 2.207 | −12.0 | 5.190 | 3.816 | −26.5 |
+| pois | 16.32 | 14.91 | −8.6 | 2.557 | 2.108 | −17.6 | 5.963 | 4.958 | −16.8 |
+| neg-bin | 17.62 | 13.19 | −25.1 | 2.561 | 2.058 | −19.6 | 5.332 | 4.067 | −23.7 |
 
 *Fitted vs. truth* (case i, `box-cox`):
 
 | | `offset = FALSE` | `offset = TRUE` |
 |---|---|---|
-| friedman | <img src="(i) data_offsets/box-cox/fr-fitted-FALSE.png" width="400"> | <img src="(i) data_offsets/box-cox/fr-fitted-TRUE.png" width="400"> |
-| imbalanced | <img src="(i) data_offsets/box-cox/im-fitted-FALSE.png" width="400"> | <img src="(i) data_offsets/box-cox/im-fitted-TRUE.png" width="400"> |
-| heterogeneous | <img src="(i) data_offsets/box-cox/ht-fitted-FALSE.png" width="400"> | <img src="(i) data_offsets/box-cox/ht-fitted-TRUE.png" width="400"> |
+| friedman | <img src="(i) data_offset/box-cox/fr-fitted-FALSE.png" width="400"> | <img src="(i) data_offset/box-cox/fr-fitted-TRUE.png" width="400"> |
+| imbalanced | <img src="(i) data_offset/box-cox/im-fitted-FALSE.png" width="400"> | <img src="(i) data_offset/box-cox/im-fitted-TRUE.png" width="400"> |
+| heterogeneous | <img src="(i) data_offset/box-cox/ht-fitted-FALSE.png" width="400"> | <img src="(i) data_offset/box-cox/ht-fitted-TRUE.png" width="400"> |
 
-Without the offset, the fitted means scatter widely around the 1:1 line, and large means are under-estimated (most clearly in imbalanced and heterogeneous). With the offset, the points concentrate along the 1:1 line and the intervals narrow for small and moderate means. The largest means remain under-estimated in imbalanced and in heterogeneous (to a lesser extent).
+Without the offset, the fitted means scatter widely around the 1:1 line. With the offset, they concentrate along it, and the intervals narrow for small and moderate means.
 
 **Interpretation**
 
-- **The offset helps consistently.** RMSE to truth falls in all 21 cells (−4.8% to −26.9%; −11.3% to −26.9% excluding `identity`), and WAIC falls in 18 of the 20 finite cells.
-- **Size of the gains.**
-  - RMSE: `log` and `box-cox` (which nests `log`) reduce RMSE by 17.9–26.9% in every scenario. This is consistent with the multiplicative exposure in the data, which `log` represents exactly. `neg-bin` is close behind (−18.3% to −23.5%), and `np` is comparable in heterogeneous (−25.7%). In imbalanced, `log`, `neg-bin`, `pois` and `box-cox` all lie within −17.9% to −18.4%.
-  - WAIC: the largest drops in friedman are `sqrt` (−118.6) and `neg-bin` (−83.5), which fit relatively poorly without the offset.
-- **Exceptions.**
-  - `identity` / friedman: the mean improves (−16.2%) but WAIC worsens by 158. A likely cause is that a constant-$\sigma$ Gaussian on the density $y/e$ cannot represent the NB variance $\text{Var}(Y/e) = \lambda/e + \lambda^{2}/r$ (with $\lambda = m/e$), which changes with both the rate and the exposure. This is most damaging for friedman's wide range of rates (0.04–56).
-  - `np` / imbalanced: $\Delta\text{WAIC} = +13.7$, of the same order as the largest Monte Carlo difference in case (ii) ($\lvert \Delta\text{WAIC} \rvert \le 11.9$). RMSE still improves (−12.3%). More generally, `np` has the smallest WAIC gain in imbalanced and heterogeneous, and the best `offset = FALSE` WAIC in all three scenarios. Its $g$ is a fixed plug-in empirical CDF of $y_{i}/e_{i}$, so exposure noise enters the estimate of $g$ itself, and all zeros (54% here) collapse to $y/e = 0$. Without the offset, this flexible $g$ already absorbs part of the exposure variation.
-  - `pois` / friedman / `offset = FALSE` returns `WAIC = NaN`. This is the original code, so it is unrelated to the offset. The friedman counts are heavily overdispersed, but the moment-matched Poisson CDF has a light tail and equals 1 numerically for the largest counts. Those points of $g$ are dropped, and $g$ is extrapolated linearly beyond them, so the largest counts are mapped far into the tail of the latent normal. There, $\Phi(\text{upper}) - \Phi(\text{lower})$ can underflow to 0 in some draws. The resulting $-\infty$ pointwise log-likelihood makes $p_{\text{WAIC}}$, and hence WAIC is NaN. This is a numerical fragility of pois with heavy-tailed counts, and it should be flagged in applications.
-- **Ranking of transformations** (`offset = TRUE`).
-  - By WAIC, `log`, `box-cox` and `np` are the top three in every scenario, followed by `neg-bin`, `sqrt`, `pois` and `identity`, in that order.
-  - By RMSE, the best is `log` (friedman), `neg-bin` (imbalanced) and `np` ≈ `box-cox` (heterogeneous). `identity` is worst everywhere. `pois` is second-worst in heterogeneous but competitive in imbalanced, where `log`, `box-cox`, `pois` and `neg-bin` differ by less than 1% and `np` is second-worst (2.200).
+- **The offset improves the fitted means everywhere.** RMSE to truth falls in all 21 cells (−4.8% to −27.1%; −8.6% to −27.1% excluding `identity`). WAIC falls in 16 of the 20 finite cells.
+- **Largest gains.** `box-cox`, `log` and `neg-bin` reduce RMSE by 18–27% in every scenario, consistent with the multiplicative exposure in the data, which `log` represents exactly. `np` matches them in heterogeneous (−26.5%).
+- **Transformation matters.** The choice of $g$ affects fit as the offset does. `log`, `box-cox` and `np` give the best WAIC in every scenario, while `identity` and `pois` are the weakest. The count-based CDFs (`pois`, `neg-bin`) might worsen WAIC in the zero-heavy scenario. In practice, `log`, `box-cox` or `np` might be safer defaults.
 
 *PPC, proportion of zeros* (case i, friedman; blue line = observed 0.228):
 
 | | `offset = FALSE` | `offset = TRUE` |
 |---|---|---|
-| `np` | <img src="(i) data_offsets/np/fr-PPC-FALSE.png" width="400"> | <img src="(i) data_offsets/np/fr-PPC-TRUE.png" width="400"> |
-| `pois` | <img src="(i) data_offsets/pois/fr-PPC-FALSE.png" width="400"> | <img src="(i) data_offsets/pois/fr-PPC-TRUE.png" width="400"> |
-| `box-cox` | <img src="(i) data_offsets/box-cox/fr-PPC-FALSE.png" width="400"> | <img src="(i) data_offsets/box-cox/fr-PPC-TRUE.png" width="400"> |
+| `np` | <img src="(i) data_offset/np/fr-PPC-FALSE.png" width="400"> | <img src="(i) data_offset/np/fr-PPC-TRUE.png" width="400"> |
+| `pois` | <img src="(i) data_offset/log/fr-PPC-FALSE.png" width="400"> | <img src="(i) data_offset/log/fr-PPC-TRUE.png" width="400"> |
+| `box-cox` | <img src="(i) data_offset/box-cox/fr-PPC-FALSE.png" width="400"> | <img src="(i) data_offset/box-cox/fr-PPC-TRUE.png" width="400"> |
 
-Zero calibration is driven mainly by $g$. The offset changes it materially only for `np` in friedman.
+Zero calibration is driven mainly by $g$:
 
-- **`log`, `box-cox`**: calibrated in all three scenarios, under both fits.
-- **`np`**: without the offset, friedman zeros are under-predicted (draws centred near 0.16 vs. observed 0.228). With the offset they are well calibrated. Imbalanced and heterogeneous are calibrated under both fits.
-- **`neg-bin`**: calibrated or close. With the offset, the observed proportion sits in the lower tail in friedman and heterogeneous (draws centred near 0.27–0.29).
-- **`sqrt`, `pois`**: zeros are over-predicted in friedman and heterogeneous (draws centred near 0.32–0.37 vs. observed 0.23–0.25), under both fits.
-- **`identity`**: the worst calibrated. Draws are centred near 0.41–0.43 in friedman and heterogeneous, and near 0.62 vs. 0.54 in imbalanced.
-- **imbalanced** (54% zeros): the observed proportion lies within the predictive distribution for every transformation except `identity`.
+- `log`, `box-cox`: calibrated in all three scenarios, under both fits.
+- `np`: without the offset, friedman zeros are under-predicted (draws centred near 0.16 vs. observed 0.228). With the offset, they are well calibrated.
+- `sqrt`, `pois`: zeros are over-predicted in friedman and heterogeneous.
+- `identity`: the worst calibrated.
 
 ### Case (ii): `offset = TRUE` with $e \equiv 1$
 
-With $e_{i} \equiv 1$, both fits execute the same computations:
-
-- `np`: the scaling constant is $M = 1$.
-- `pois` / `neg-bin`: $\bar{e} = 1$.
-- `box-cox`: the same pilot-MCMC initialisation is used.
-
-The two fits therefore differ only in the random-number stream. Case (ii) is a pair of independent MCMC runs of the original `bart_star()` on the same data, which makes it a direct check of its Monte Carlo stability.
+With $e_{i} \equiv 1$, every changed line of the code reduces to the original line, so the two fits differ only in the random-number stream. Case (ii) is therefore a pair of independent MCMC runs of the original `bart_star()` on the same data.
 
 **Table 3: WAIC** ($\Delta = \text{TRUE} - \text{FALSE}$).
 
@@ -174,22 +130,4 @@ The two fits therefore differ only in the random-number stream. Case (ii) is a p
 
 **Interpretation**
 
-- **`offset = TRUE` reduces to the original model.** The correlation is $\ge 0.9936$ in all 24 cells and $\lvert \Delta\text{WAIC} \rvert \le 11.9$ ($\le 1.6\%$ of WAIC). The paired panels are visually indistinguishable. The visible patterns (shrinkage of the largest means, wide intervals) appear in both fits, so they are properties of the model and data rather than of the offset.
-- **Is the original `bart_star()` stable?**
-  - For the **posterior mean fit, yes**. For the fixed and plug-in transformations, the correlation is $\ge 0.9968$. The RMSE between runs is $\le 0.15$ outside friedman and $\le 0.78$ in friedman, where the true means range up to $\approx 192$ (all but one are below 50).
-  - **WAIC carries Monte Carlo error of up to $\approx 12$ points**, even with 1000 saved draws. Case (i) differences of that order (e.g. `neg-bin` / imbalanced −12.5, `np` / imbalanced +13.7) should not be over-interpreted.
-  - `ispline` is the least stable: its RMSE between runs (0.36–1.48) is 2–6 times the largest among the other transformations, consistent with slower mixing of its sampled transformation. `box-cox`, which also samples its transformation, is as stable as the fixed ones (RMSE 0.08–0.49, $\lvert \Delta\text{WAIC} \rvert$ 4.6–6.1). Thus, we don't recommend using this transformation.
-- **Transformation choice for the original model** ($e \equiv 1$, `offset = FALSE` WAIC). `np` is best in all three scenarios (984.6 / 638.9 / 936.1), `neg-bin` is second in all three, and `identity` is worst in all three (1179.7 / 685.8 / 989.8). However, `np`'s margin over `neg-bin` (19.9 / 5.2 / 3.2) exceeds the Monte Carlo error only in friedman.
-
-## Summary
-
-- **The offset works.** With real exposure heterogeneity, `offset = TRUE` reduces RMSE to truth in all 21 cells (by up to 26.9%) and lowers WAIC in 18 of 20 comparable cells. The two WAIC reversals are `identity` / friedman (misspecified mean–variance relation) and `np` / imbalanced (+13.7, of the order of the Monte Carlo error).
-- **Transformation choice.** `log`, `box-cox` and `np` perform best by WAIC, and `log` / `box-cox` show the largest and most consistent RMSE gains from the offset. `identity` is consistently worst. `pois` is weak under overdispersion and numerically fragile with heavy-tailed counts (NaN WAIC). `log`, `box-cox` and `np` are therefore the natural default candidates in applications.
-- **Zero calibration is driven by $g$.** `log`, `box-cox`, `np` (with the offset) and `neg-bin` reproduce the observed zero proportion. `identity`, `sqrt` and `pois` over-predict zeros in friedman and heterogeneous.
-- **No-op check.** With $e \equiv 1$, `offset = TRUE` reproduces `offset = FALSE` up to Monte Carlo error. This also shows that the original `bart_star()` gives stable fitted means across runs.
-
-## Limitations
-
-- There is one data set per scenario and one chain per fit, so no between-replicate uncertainty is reported. WAIC differences below $\approx 12$, and the `ispline` results, need replicates or longer chains to be conclusive.
-- For `box-cox` in case (i), the two fits also differ in how the $\sigma$ prior is calibrated (pilot MCMC vs. initial $\lambda_{0}$), so that comparison is not purely the effect of the offset.
-- Runtime increased relative to an earlier test (`nburn = 300`, `nsave = 300`), as expected with 2.5 times as many iterations, but it remains acceptable.
+- **`offset = TRUE` reduces to the original model.** The correlation is $\ge 0.9936$ in all 24 cells, $\lvert\Delta\text{WAIC}\rvert \le 11.9$ ($\le 1.6\%$ of WAIC), and the paired panels are visually indistinguishable. The fitted means are stable across runs (correlation $\ge 0.9968$ for all transformations except `ispline`).
