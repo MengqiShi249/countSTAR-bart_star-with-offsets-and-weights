@@ -9,11 +9,6 @@
 #' @param X_test \code{n_test x p} matrix of predictors for test data
 #' @param y_test \code{n_test x 1} vector of the test data responses (used for
 #' computing log-predictive scores)
-#' @param offsets \code{n x 1} vector (or scalar) of known offsets (exposures)
-#' \code{e_i > 0} for the training data; default is 1 (no offsets). See Details.
-#' @param offsets_test \code{n_test x 1} vector (or scalar) of known offsets for
-#' the test data; default is 1, i.e., predictions at unit exposure. Ignored if
-#' \code{X_test = NULL}
 #' @param transformation transformation to use for the latent process; must be one of
 #' \itemize{
 #' \item "identity" (identity transformation)
@@ -44,6 +39,12 @@
 #' @param save_y_hat logical; if TRUE, compute and save the posterior draws of
 #' the expected counts, E(y), which may be slow to compute
 #' @param verbose logical; if TRUE, print time remaining
+#' @param offsets \code{n x 1} vector (or scalar) of known offsets (exposures) \code{e > 0};
+#' the model is \code{y = floor(y*)} with \code{g(y*/e)} modeled by BART, so the cut points
+#' \code{[j, j+1)} become \code{[j/e, (j+1)/e)}. Default is 1 (no offsets).
+#' 'ispline' is not available with offsets
+#' @param offsets_test \code{n_test x 1} vector (or scalar) of known offsets for the test data;
+#' default is 1
 #'
 #' @return a list with the following elements:
 #' \itemize{
@@ -99,22 +100,7 @@
 #' modeled as an unknown, monotone function using I-splines ('ispline'). The
 #' Robust Adaptive Metropolis (RAM) sampler is used for drawing the parameter
 #' of the transformation function.
-#'
-#' \strong{Offsets.} With known exposures \code{e_i > 0} (\code{offsets}), the
-#' transformation acts on the latent count per unit exposure:
-#' \code{y_i = floor(y_i*)} and \code{g(y_i*/e_i) = mu(x_i) + eps_i}, so \code{mu}
-#' and \code{sigma} are on the scale of the transformed density \code{g(y*/e)}.
-#' The offsets enter only through the observation-specific cut points
-#' \code{a_j/e_i}; for \code{transformation = 'log'} this is the usual
-#' log-offset. For 'np', 'pois' and 'neg-bin', the transformation is estimated
-#' on the density scale: 'np' uses the empirical CDF of \code{y/offsets};
-#' 'pois' and 'neg-bin' use the moment-matched count CDF at the reference
-#' exposure given by the geometric mean of \code{offsets}. 'ispline' is not
-#' available with non-unit offsets. All count-scale outputs (\code{post.pred},
-#' \code{post.fitted.values}, ...) are at the supplied exposures: \code{offsets}
-#' for the training data and \code{offsets_test} for the test data. With
-#' \code{offsets = 1}, the computations are those of the original sampler.
-#'
+
 #' @examples
 #' \donttest{
 #' # Simulate data with count-valued response y:
@@ -161,23 +147,6 @@
 #'   hist(apply(fit$post.pred, 1,
 #'              function(x) mean(x==0)), main = 'Proportion of Zeros', xlab='');
 #'   abline(v = mean(y==0), lwd=4, col ='blue')
-#'
-#'# BART-STAR with known offsets (exposures) e_i:
-#' e = runif(length(y), min = 0.5, max = 5)
-#' y_e = rnbinom(length(y), size = 1, mu = e*sim_dat$Ey)  # counts proportional to exposure
-#' fit_off = bart_star(y = y_e, X = X, offsets = e,
-#'                    X_test = X, offsets_test = 1,
-#'                    transformation = 'np', save_y_hat = TRUE)
-#'
-#'   # Expected counts at the observed exposures:
-#'   plot_fitted(y = e*sim_dat$Ey,
-#'               post_y = fit_off$post.fitted.values,
-#'               main = 'Fitted Values: BART-STAR-np with offsets')
-#'
-#'   # Expected counts at unit exposure (density per unit effort):
-#'   plot_fitted(y = sim_dat$Ey,
-#'               post_y = fit_off$post.fitted.values.test,
-#'               main = 'Fitted Values at e = 1')
 #' }
 #' }
 #'
@@ -185,8 +154,6 @@
 bart_star = function(y,
                      X,
                      X_test = NULL, y_test = NULL,
-                     offsets = 1,
-                     offsets_test = 1,
                      transformation = 'np',
                      y_max = Inf,
                      n.trees = 200,
@@ -195,7 +162,8 @@ bart_star = function(y,
                      nburn = 1000,
                      nskip = 0,
                      save_y_hat = FALSE,
-                     verbose = TRUE){
+                     verbose = TRUE,
+                     offsets = 1, offsets_test = 1){
   
   # Library required here:
   if (!requireNamespace("dbarts", quietly = TRUE)) stop("Package \"dbarts\" must be installed to use this function.", call. = FALSE)
@@ -211,20 +179,19 @@ bart_star = function(y,
   if(any(y > y_max))
     stop('y must not exceed y_max')
   
-  # OFFSETS: checks (scalars are recycled)
+  # Check: offsets must be positive (a scalar is recycled)
   if(length(offsets) == 1) offsets = rep(offsets, length(y))
-  if(length(offsets) != length(y)) stop('offsets must have length equal to length(y)')
-  if(any(!is.finite(offsets)) || any(offsets <= 0)) stop('offsets must be finite and strictly positive')
+  if(length(offsets) != length(y) || any(offsets <= 0))
+    stop('offsets must be positive with length equal to length(y)')
   
   #If transformation is ispline, call the appropriate function and return the results
   if(transformation=="ispline"){
-    # OFFSETS: the I-spline sampler assumes integer cut points a_j = j
     if(any(offsets != 1) || any(offsets_test != 1))
       stop("transformation = 'ispline' is not available with offsets")
     .args = as.list(match.call())[-1]
     .args[['transformation']] <- NULL
     .args[['offsets']] <- NULL; .args[['offsets_test']] <- NULL
-    return(do.call(countSTAR:::bart_star_ispline, .args))
+    return(do.call(bart_star_ispline, .args))
   }
   
   # Check: does the transformation make sense?
@@ -244,17 +211,6 @@ bart_star = function(y,
   # Number of predictors:
   p = ncol(X)
   
-  # Include a test dataset:
-  include_test = !is.null(X_test)
-  if(include_test) {
-    n_test = nrow(X_test) # Size of test dataset
-    
-    # OFFSETS: checks for the test offsets (scalars are recycled)
-    if(length(offsets_test) == 1) offsets_test = rep(offsets_test, n_test)
-    if(length(offsets_test) != n_test) stop('offsets_test must have length equal to nrow(X_test)')
-    if(any(!is.finite(offsets_test)) || any(offsets_test <= 0)) stop('offsets_test must be finite and strictly positive')
-  }
-  
   # Define the transformation:
   if(transform_family == 'bc'){
     # Lambda value for each Box-Cox argument:
@@ -272,31 +228,15 @@ bart_star = function(y,
   
   if(transform_family == 'cdf'){
     
+    # Transformation function (offsets: for 'np', g(t) = qnorm(n/(n+1)*mean(y/e < t)) at the
+    # observed t = y/e > 0, which equals g_cdf(y, 'np') when e = 1, since F_y(t - 1) = mean(y < t)):
     if(transformation == 'np'){
-      # OFFSETS: estimate g on the density scale, from the empirical CDF of the
-      # observed densities d = y/e, with the unmodified g_cdf(). g_cdf() sets
-      # g(t) = qnorm(F(t - 1)) at the data points, where 't - 1' means 'strictly
-      # below t' for integer counts. Passing M*d with M*(min gap of d) >= 1 (= 2 when rescaled) keeps
-      # this meaning for non-integer densities; g(t) = g_M(M*t) undoes the scaling.
-      # M = 1 (and g = g_cdf(y)) whenever the densities are >= 1 apart, e.g. offsets = 1.
-      d = signif(y/offsets, 12)
-      d_unique = sort(unique(d))
-      d_gap = if(length(d_unique) > 1) min(diff(d_unique)) else 1
-      M = if(d_gap >= 1) 1 else 2/d_gap
-      g_M = g_cdf(y = M*d, distribution = 'np')
-      g = function(t) g_M(M*t)
-    } else {
-      # OFFSETS: 'pois'/'neg-bin' are count distributions, so g_cdf() is estimated
-      # from the counts y and mapped to the density scale y*/e with the reference
-      # exposure e_bar (geometric mean of the offsets): g(t) = g_y(e_bar*t).
-      # e_bar = 1 (and g = g_y) when offsets = 1.
-      e_bar = exp(mean(log(offsets)))
-      g_y = g_cdf(y = y, distribution = transformation)
-      g = function(t) g_y(e_bar*t)
-    }
+      d = sort(unique(y/offsets)); t0 = d[d != 0]
+      g0 = qnorm(n/(n+1)*ecdf(y/offsets)(c(-Inf, d)[match(t0, d)]))
+      g = splinefun(t0[is.finite(g0)], g0[is.finite(g0)], method = 'monoH.FC')
+    } else g = g_cdf(y = y, distribution = transformation)
     
-    # Define the grid for approximations using equally-spaced + quantile points
-    # OFFSETS: on the offset-adjusted scale y/e, the domain of g's argument
+    # Define the grid for approximations using equally-spaced + quantile points:
     t_grid = sort(unique(round(c(
       seq(0, min(2*max(y/offsets), y_max/min(offsets)), length.out = 250),
       quantile(unique((y[y < y_max] + 1)/offsets[y < y_max]), seq(0, 1, length.out = 250))), 8)))
@@ -308,28 +248,37 @@ bart_star = function(y,
     lambda = NULL
   }
   
-  # Random initialization for z_star (OFFSETS: original rule on the scale y*/e):
+  # Random initialization for z_star (offsets: on the y/e scale):
   z_star = g((y + abs(rnorm(n = n)))/offsets)
   
   # Now initialize the model: BART!
+  
+  # Include a test dataset:
+  include_test = !is.null(X_test)
+  if(include_test){
+    n_test = nrow(X_test) # Size of test dataset
+    
+    # Check: test offsets must be positive (a scalar is recycled)
+    if(length(offsets_test) == 1) offsets_test = rep(offsets_test, n_test)
+    if(length(offsets_test) != n_test || any(offsets_test <= 0))
+      stop('offsets_test must be positive with length equal to nrow(X_test)')
+  }
   
   # Initialize the dbarts() object:
   control = dbarts::dbartsControl(n.chains = 1, n.burn = 0, n.samples = 1,
                                   n.trees = n.trees)
   # Initialize the standard deviation:
   if(is.null(sigest)){
-    # OFFSETS: the pilot MCMC models the raw counts and cannot take offsets,
-    # so it is used only when there are none
-    if(transformation == 'box-cox' && all(offsets == 1)){
+    if(transformation == 'box-cox' && all(offsets == 1)){ # (the pilot MCMC does not take offsets)
       # Lambda is unknown, so use pilot MCMC with mean-only model to identify sigma estimate:
       fit0 = genMCMC_star(y = y,
-                          sample_params = countSTAR:::sample_params_mean,
-                          init_params = countSTAR:::init_params_mean,
+                          sample_params = sample_params_mean,
+                          init_params = init_params_mean,
                           transformation = 'box-cox', nburn = 1000, nsave = 100, verbose = FALSE)
       sigest = median(fit0$post.sigma)
     } else {
       # Transformation is known, so simply transform the raw data and estimate the SD
-      # (OFFSETS: on the scale y/e; for 'box-cox' with offsets, at the initial lambda):
+      # (offsets: on the y/e scale; for 'box-cox' with offsets, at the initial lambda):
       sigest = sd(g((y + 1)/offsets), na.rm=TRUE)
     }
   }
@@ -347,7 +296,7 @@ bart_star = function(y,
   params = list(mu = samp$train,
                 sigma = samp$sigma)
   
-  # Lower and upper intervals (OFFSETS: cut points a_j/e_i):
+  # Lower and upper intervals (offsets: [j/e, (j+1)/e)):
   a_y = a_j(y, y_max = y_max)/offsets; a_yp1 = a_j(y + 1, y_max = y_max)/offsets
   z_lower = g(a_y); z_upper = g(a_yp1)
   
@@ -368,18 +317,6 @@ bart_star = function(y,
     post.lambda = numeric(nsave)
   } else post.lambda = NULL
   
-  # Conditional expectation E(y | mu, sigma, e) (OFFSETS): tail sum lo + sum_{j=lo+1}^{hi} Pr(y >= j),
-  # with lo, hi the 0.0001 and 0.9999 quantiles of y at exposure e (see README_offset.md).
-  expect_y = function(mu, e){
-    hi = ceiling(round_floor(g_inv(qnorm(0.9999, mean = mu, sd = params$sigma))*e, y_max = y_max))
-    hi = pmin(hi, ceiling(2*max(y/offsets)*e)) # cap, as in the original (computing time)
-    lo = pmin(round_floor(g_inv(qnorm(0.0001, mean = mu, sd = params$sigma))*e, y_max = y_max), hi)
-    len = hi - lo; id = rep(seq_along(mu), len); j = sequence(len, from = lo + 1)
-    p_ge = pnorm(g(j/e[id]), mean = mu[id], sd = params$sigma, lower.tail = FALSE)
-    cs = c(0, cumsum(p_ge)); ends = cumsum(len)
-    lo + cs[ends + 1] - cs[ends - len + 1]
-  }
-  
   # Total number of MCMC simulations:
   nstot = nburn+(nskip+1)*(nsave)
   skipcount = 0; isave = 0 # For counting
@@ -390,11 +327,11 @@ bart_star = function(y,
     
     #----------------------------------------------------------------------------
     # Block 1: sample the z_star
-    z_star = countSTAR:::rtruncnormRcpp(y_lower = z_lower,
-                                        y_upper = z_upper,
-                                        mu = params$mu,
-                                        sigma = rep(params$sigma, n),
-                                        u_rand = runif(n = n))
+    z_star = rtruncnormRcpp(y_lower = z_lower,
+                            y_upper = z_upper,
+                            mu = params$mu,
+                            sigma = rep(params$sigma, n),
+                            u_rand = runif(n = n))
     #----------------------------------------------------------------------------
     # Block 2: sample the conditional mean mu (+ any corresponding parameters)
     #   and the conditional SD sigma
@@ -402,18 +339,18 @@ bart_star = function(y,
     samp = sampler$run(updateState = TRUE)
     params$mu = samp$train; params$sigma = samp$sigma
     #----------------------------------------------------------------------------
-    # Block 3: sample lambda (transformation); a_y, a_yp1 already include the offsets
+    # Block 3: sample lambda (transformation)
     if(transformation == 'box-cox'){
-      lambda = countSTAR:::uni.slice(x0 = lambda,
-                                     g = function(l_bc){
-                                       countSTAR:::logLikeRcpp(g_a_j = g_bc(a_y, l_bc),
-                                                               g_a_jp1 = g_bc(a_yp1, l_bc),
-                                                               mu = params$mu,
-                                                               sigma = rep(params$sigma, n)) +
-                                         # This is the prior on lambda, truncated to [0, 3]
-                                         dnorm(l_bc, mean = 1/2, sd = 1, log = TRUE)
-                                     },
-                                     w = 1/2, m = 50, lower = 0, upper = 3)
+      lambda = uni.slice(x0 = lambda,
+                         g = function(l_bc){
+                           logLikeRcpp(g_a_j = g_bc(a_y, l_bc),
+                                       g_a_jp1 = g_bc(a_yp1, l_bc),
+                                       mu = params$mu,
+                                       sigma = rep(params$sigma, n)) +
+                             # This is the prior on lambda, truncated to [0, 3]
+                             dnorm(l_bc, mean = 1/2, sd = 1, log = TRUE)
+                         },
+                         w = 1/2, m = 50, lower = 0, upper = 3)
       
       # Update the transformation and inverse transformation function:
       g = function(t) g_bc(t, lambda = lambda)
@@ -434,27 +371,45 @@ bart_star = function(y,
         # Increment the save index
         isave = isave + 1
         
-        # Posterior predictive distribution (OFFSETS: y = h(e * g^{-1}(z))):
+        # Posterior predictive distribution (offsets: y = floor(e * g^{-1}(z))):
         post.pred[isave,] = round_floor(g_inv(rnorm(n = n, mean = params$mu, sd = params$sigma))*offsets, y_max=y_max)
         
-        # Conditional expectation (OFFSETS: at exposure e_i; see expect_y() above):
-        if(save_y_hat) post.fitted.values[isave,] = expect_y(mu = params$mu, e = offsets)
+        # Conditional expectation (offsets: at e_i, with cut points a_j/e_i):
+        if(save_y_hat){
+          Jmax = ceiling(round_floor(g_inv(
+            qnorm(0.9999, mean = params$mu, sd = params$sigma))*offsets, y_max=y_max))
+          Jmax[Jmax > 2*max(y)] = 2*max(y) # To avoid excessive computation times, cap at 2*max(y)
+          Jmaxmax = max(Jmax)
+          for(i in 1:n) # offsets: the cut points a_j/e_i differ by observation
+            post.fitted.values[isave, i] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax)/offsets[i]),
+                                                             g_a_jp1 = g(a_j(1:(Jmaxmax + 1))/offsets[i]),
+                                                             mu = params$mu[i], sigma = params$sigma,
+                                                             Jmax = Jmax[i])
+        }
         
         if(include_test){
           # Conditional of the z_star at test points (useful for predictive distribution later)
           post.mu.test[isave,] = samp$test
           
-          # Posterior predictive distribution at test points (OFFSETS: at offsets_test):
+          # Posterior predictive distribution at test points (offsets: at offsets_test):
           post.pred.test[isave,] = round_floor(g_inv(rnorm(n = n_test, mean = samp$test, sd = params$sigma))*offsets_test, y_max=y_max)
-          # Conditional expectation at test points (OFFSETS: at offsets_test):
-          post.fitted.values.test[isave,] = expect_y(mu = samp$test, e = offsets_test)
+          # Conditional expectation at test points (offsets: at offsets_test, with cut points a_j/e_i):
+          Jmax = ceiling(round_floor(g_inv(
+            qnorm(0.9999, mean = samp$test, sd = params$sigma))*offsets_test, y_max=y_max))
+          Jmax[Jmax > 2*max(y)] = 2*max(y) # To avoid excessive computation times, cap at 2*max(y)
+          Jmaxmax = max(Jmax)
+          for(i in 1:n_test) # offsets: the cut points a_j/e_i differ by observation
+            post.fitted.values.test[isave, i] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax)/offsets_test[i]),
+                                                                  g_a_jp1 = g(a_j(1:(Jmaxmax + 1))/offsets_test[i]),
+                                                                  mu = samp$test[i], sigma = params$sigma,
+                                                                  Jmax = Jmax[i])
           
-          # Test points for log-predictive score (OFFSETS: cut points a_j/e_i; y_max as in training):
+          # Test points for log-predictive score (offsets: cut points [j/e, (j+1)/e)):
           if(!is.null(y_test))
-            post.log.pred.test[isave,] = countSTAR:::logLikePointRcpp(g_a_j = g(a_j(y_test, y_max = y_max)/offsets_test),
-                                                                      g_a_jp1 = g(a_j(y_test + 1, y_max = y_max)/offsets_test),
-                                                                      mu = samp$test,
-                                                                      sigma = rep(params$sigma, n_test))
+            post.log.pred.test[isave,] = logLikePointRcpp(g_a_j = g(a_j(y_test)/offsets_test),
+                                                          g_a_jp1 = g(a_j(y_test + 1)/offsets_test),
+                                                          mu = samp$test,
+                                                          sigma = rep(params$sigma, n_test))
         }
         
         # Nonlinear parameter of Box-Cox transformation:
@@ -466,18 +421,18 @@ bart_star = function(y,
         # Conditional mean parameter:
         post.mu[isave,] = params$mu
         
-        # Pointwise Log-likelihood (z_lower, z_upper already include the offsets):
-        post.log.like.point[isave, ] = countSTAR:::logLikePointRcpp(g_a_j = z_lower,
-                                                                    g_a_jp1 = z_upper,
-                                                                    mu = params$mu,
-                                                                    sigma = rep(params$sigma, n))
+        # Pointwise Log-likelihood:
+        post.log.like.point[isave, ] = logLikePointRcpp(g_a_j = z_lower,
+                                                        g_a_jp1 = z_upper,
+                                                        mu = params$mu,
+                                                        sigma = rep(params$sigma, n))
         
         # And reset the skip counter:
         skipcount = 0
       }
       
     }
-    if(verbose) countSTAR:::computeTimeRemaining(nsi, timer0, nstot)
+    if(verbose) computeTimeRemaining(nsi, timer0, nstot)
   }
   
   # Summarize computing time:
