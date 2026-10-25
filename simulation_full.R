@@ -1,5 +1,6 @@
 library(countSTAR)
 source("/Users/shimengqi/Desktop/Courses/0-research/BART-STAR/offset/bart_star_offset.R")
+environment(bart_star) <- asNamespace("countSTAR") # needed when sourcing: bart_star() uses countSTAR internals
 source("/Users/shimengqi/Desktop/Courses/0-research/BART-STAR/offset/helper_sim.R")
 
 set.seed(123)
