@@ -1,8 +1,9 @@
 library(countSTAR)
-source("/Users/shimengqi/Desktop/Courses/0-research/BART-STAR/offset/bart_star_offset.R")
-environment(bart_star) <- asNamespace("countSTAR") # needed when sourcing: bart_star() uses countSTAR internals
+env = new.env(parent = asNamespace("countSTAR"))
+sys.source("/Users/shimengqi/Desktop/Courses/0-research/BART-STAR/offset/bart_star_offset.R", envir = env)
+bart_star = env$bart_star   # uses the offset g_cdf(), plus countSTAR internals
+g_cdf = env$g_cdf           # only if you call g_cdf() directly
 source("/Users/shimengqi/Desktop/Courses/0-research/BART-STAR/offset/helper_sim.R")
-
 set.seed(123)
 
 n = 250; p = 6
