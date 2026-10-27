@@ -1,3 +1,98 @@
+#----------------------------------------------------------------------------
+#' Cumulative distribution function (CDF)-based transformation
+#'
+#' Compute a CDF-based transformation using the observed count data.
+#' The CDF can be estimated nonparametrically or parametrically based on the
+#' Poisson or Negative Binomial distributions. In the parametric case,
+#' the parameters are determined based on the moments of \code{y}.
+#' Note that this is a fixed quantity and does not come with uncertainty quantification.
+#'
+#' @param y \code{n x 1} vector of observed counts
+#' @param distribution the distribution used for the CDF; must be one of
+#' \itemize{
+#' \item "np" (empirical CDF)
+#' \item "pois" (moment-matched marginal Poisson CDF)
+#' \item "neg-bin" (moment-matched marginal Negative Binomial CDF)
+#' }
+#' @param offsets \code{n x 1} vector (or scalar) of positive offsets for \code{y};
+#' default is 1 (no offsets)
+#' @return A smooth monotone function which can be used for evaluations of the transformation.
+#'
+#'
+#' @examples
+#' # Sample some data:
+#' y = rpois(n = 500, lambda = 5)
+#'
+#' # Empirical CDF version:
+#' g_np = g_cdf(y, distribution = 'np')
+#'
+#' # Poisson version:
+#' g_pois = g_cdf(y, distribution = 'pois')
+#'
+#' # Negative binomial version:
+#' g_negbin = g_cdf(y, distribution = 'neg-bin')
+#'
+#' # Plot together:
+#' t = 1:max(y) # grid
+#' plot(t, g_np(t), type='l')
+#' lines(t, g_pois(t), lty = 2)
+#' lines(t, g_negbin(t), lty = 3)
+#'
+#' @export
+g_cdf = function(y, distribution = "np", offsets = 1) {
+  
+  # Check: does the distribution make sense?
+  distribution = tolower(distribution);
+  if(!is.element(distribution, c("np", "pois", "neg-bin", "box-cox")))
+    stop("The distribution must be one of 'np', 'pois', or 'neg-bin'")
+  
+  # Number of observations:
+  n = length(y)
+  
+  # Moments of the raw counts (offsets: of y/e):
+  mu_y = mean(y/offsets); sigma_y = sd(y/offsets)
+  
+  # CDFs (offsets: evaluated just below t, F_y(t) = average of P(y_i/e_i < t),
+  # which is the CDF at t - 1 when e = 1 and t is an integer):
+  if(distribution == 'np') {
+    # (Scaled) empirical CDF of y/e:
+    F_y = function(t) n/(n+1)*sapply(t, function(s) mean(y/offsets < s))
+  }
+  if(distribution == 'pois'){
+    # Poisson CDF with moment-matched parameters (offsets: y_i ~ Pois(e_i*mu_y)):
+    F_y = function(t) sapply(t, function(s) mean(ppois(ceiling(round(offsets*s, 8)) - 1,
+                                                       lambda = offsets*mu_y)))
+  }
+  if(distribution == 'neg-bin') {
+    # Negative-binomial CDF with moment-matched parameters (offsets: y_i ~ NB(mean e_i*mu_y, size r),
+    # so that var(y_i/e_i) = mu_y/e_i + mu_y^2/r and r = mu_y^2/(sigma_y^2 - mu_y*mean(1/e))):
+    if(mu_y*mean(1/offsets) >= sigma_y^2){
+      # Check: underdispersion is incompatible with Negative-Binomial
+      # (offsets: r > 0 requires sigma_y^2 > mu_y*mean(1/e), the variance of y/e under Poisson counts)
+      warning("'neg-bin' not recommended for underdispersed data")
+      
+      # Force sigma_y^2 > mu_y*mean(1/e):
+      sigma_y = 1.1*sqrt(abs(mu_y*mean(1/offsets)))
+    }
+    F_y = function(t) sapply(t, function(s) mean(pnbinom(ceiling(round(offsets*s, 8)) - 1,
+                                                         size = mu_y^2/(sigma_y^2 - mu_y*mean(1/offsets)),
+                                                         mu = offsets*mu_y)))
+  }
+  
+  # Input points for smoothing (offsets: unique nonzero y/e):
+  t0 = sort(unique((y/offsets)[y!=0]))
+  
+  # Initial transformation (offsets: F_y is already evaluated just below t0):
+  g0 = qnorm(F_y(t0))
+  #g0 = mu_y + sigma_y*qnorm(F_y(t0))
+  
+  # Make sure we have only finite values of g0 (infinite values occur for F_y = 0 or F_y = 1)
+  t0 = t0[which(is.finite(g0))]; g0 = g0[which(is.finite(g0))]
+  
+  # Return the smoothed (monotone) transformation:
+  splinefun(t0, g0, method = 'monoH.FC')
+}
+
 #' MCMC Algorithm for BART-STAR
 #'
 #' Run the MCMC algorithm for a BART model for count-valued responses using STAR.
@@ -22,6 +117,10 @@
 #' using I-splines)
 #' }
 #' @param y_max a fixed and known upper bound for all observations; default is \code{Inf}
+#' @param offsets \code{n x 1} vector (or scalar) of positive offsets for the training data;
+#' default is 1 (no offsets)
+#' @param offsets_test \code{n_test x 1} vector (or scalar) of positive offsets for the test data;
+#' default is 1
 #' @param n.trees number of trees to use in BART; default is 200
 #' @param sigest positive numeric estimate of the residual standard deviation (see ?bart)
 #' @param sigdf  degrees of freedom for error variance prior (see ?bart)
@@ -39,12 +138,6 @@
 #' @param save_y_hat logical; if TRUE, compute and save the posterior draws of
 #' the expected counts, E(y), which may be slow to compute
 #' @param verbose logical; if TRUE, print time remaining
-#' @param offsets \code{n x 1} vector (or scalar) of known offsets (exposures) \code{e > 0};
-#' the model is \code{y = floor(y*)} with \code{g(y*/e)} modeled by BART, so the cut points
-#' \code{[j, j+1)} become \code{[j/e, (j+1)/e)}. Default is 1 (no offsets).
-#' 'ispline' is not available with offsets
-#' @param offsets_test \code{n_test x 1} vector (or scalar) of known offsets for the test data;
-#' default is 1
 #'
 #' @return a list with the following elements:
 #' \itemize{
@@ -100,6 +193,11 @@
 #' modeled as an unknown, monotone function using I-splines ('ispline'). The
 #' Robust Adaptive Metropolis (RAM) sampler is used for drawing the parameter
 #' of the transformation function.
+#'
+#' Positive offsets \code{e} (e.g., exposures) enter through the rounding operation:
+#' \code{y = floor(y*)} with \code{g(y*/e)} modeled by BART, so the cut points \code{[j, j+1)}
+#' become \code{[j/e, (j+1)/e)} and the CDF-based transformations are estimated from \code{y/e}.
+#' Offsets are not available for 'ispline'.
 
 #' @examples
 #' \donttest{
@@ -156,14 +254,14 @@ bart_star = function(y,
                      X_test = NULL, y_test = NULL,
                      transformation = 'np',
                      y_max = Inf,
+                     offsets = 1, offsets_test = 1,
                      n.trees = 200,
                      sigest = NULL, sigdf = 3, sigquant = 0.90, k = 2.0, power = 2.0, base = 0.95,
                      nsave = 1000,
                      nburn = 1000,
                      nskip = 0,
                      save_y_hat = FALSE,
-                     verbose = TRUE,
-                     offsets = 1, offsets_test = 1){
+                     verbose = TRUE){
   
   # Library required here:
   if (!requireNamespace("dbarts", quietly = TRUE)) stop("Package \"dbarts\" must be installed to use this function.", call. = FALSE)
@@ -228,13 +326,8 @@ bart_star = function(y,
   
   if(transform_family == 'cdf'){
     
-    # Transformation function (offsets: for 'np', g(t) = qnorm(n/(n+1)*mean(y/e < t)) at the
-    # observed t = y/e > 0, which equals g_cdf(y, 'np') when e = 1, since F_y(t - 1) = mean(y < t)):
-    if(transformation == 'np'){
-      d = sort(unique(y/offsets)); t0 = d[d != 0]
-      g0 = qnorm(n/(n+1)*ecdf(y/offsets)(c(-Inf, d)[match(t0, d)]))
-      g = splinefun(t0[is.finite(g0)], g0[is.finite(g0)], method = 'monoH.FC')
-    } else g = g_cdf(y = y, distribution = transformation)
+    # Transformation function (offsets: estimated from y/e):
+    g = g_cdf(y = y, distribution = transformation, offsets = offsets)
     
     # Define the grid for approximations using equally-spaced + quantile points:
     t_grid = sort(unique(round(c(
