@@ -1,6 +1,6 @@
 # countSTAR: `bart_star()` with offsets
 
-This version of `bart_star()` (file `bart_star_offset.R`) adds known **offsets** (exposures) $e_i > 0$ to the BART-STAR model for counts, for example survey effort or detection proportion in point-count data. No countSTAR helper function is added or modified. All changes are to the inputs of the existing helpers, mainly the cut points.
+This version of `bart_star()` (file `bart_star_offset.R`) adds known **offsets** (exposures) $e_i > 0$ to the BART-STAR model for counts, for example survey effort or detection proportion in point-count data. One countSTAR helper is modified: `g_cdf()` adds an `offsets` argument, and the modified version is included in `bart_star_offset.R`. All other changes are to the inputs of the existing helpers, mainly the cut points.
 
 ## Model
 
@@ -30,16 +30,25 @@ In the code, `a_y = a_j(y, y_max)/offsets`, `a_yp1 = a_j(y + 1, y_max)/offsets`,
 
 **Box-Cox family (`'identity'`, `'log'`, `'sqrt'`, `'box-cox'`).** $g = g_\lambda$ is applied to $y^\ast/e$. For `'box-cox'`, $\lambda$ is sampled as in the original; its likelihood uses the intervals $[a_{y_i}/e_i, a_{y_i+1}/e_i)$.
 
-**`'np'`: what is estimated.** As in the original, $g = \Phi^{-1}\circ F$. Here $F$ is the marginal CDF of the latent rate $y^\ast/e$, the quantity $g$ transforms. $F$ is estimated by the empirical CDF of the observed $y/e$, taken strictly below each observed value:
+**CDF-based (`'np'`, `'pois'`, `'neg-bin'`): what is estimated.** As in the original, $g = \Phi^{-1}\circ F$, but $F$ is now the marginal CDF of the latent rate $y^\ast/e$, the quantity $g$ transforms. `bart_star()` calls `g_cdf(y, transformation, offsets)`. Inside `g_cdf()`, only two steps change:
 
-$$g(t) = \Phi^{-1}\left(\frac{1}{n+1}\sum_{i=1}^{n} \mathbb{1}\left(\frac{y_i}{e_i} \lt t\right)\right), \qquad t \in \left\lbrace \frac{y_i}{e_i} : \frac{y_i}{e_i} \gt 0 \right\rbrace$$
+1. **Knots** are the unique nonzero $y_i/e_i$ (originally the unique nonzero $y_i$).
+2. **$F$ is evaluated just below each knot**, $F(t^-) = n^{-1}\sum_i P(Y_i < e_i t)$. For integer counts with $e \equiv 1$, this equals the original $F(t-1)$.
 
-dropping infinite values and interpolating with the same monotone spline as `g_cdf()`. `g_cdf(y)` uses $\hat F_y(t-1)$. For counts this equals $\frac{1}{n}\sum_{i=1}^{n} \mathbb{1}(y_i \lt t)$, because $t-1$ is the next-smaller possible count. So both use the empirical CDF strictly below each observed value, of $y$ in the original and of $y/e$ here. With $e \equiv 1$ they are identical.
+The three choices of $F$, with $\hat\mu = \text{mean}(y/e)$ and $\hat\sigma^2 = \text{var}(y/e)$:
 
-- **Why $y/e$.** The latent rate is known only to lie in $[y_i/e_i, (y_i+1)/e_i)$, so the natural choices are its lower endpoint $y/e$, upper endpoint $(y+1)/e$ and midpoint $(y+0.5)/e$. We use $y/e$ for two reasons. First, with $e \equiv 1$ it gives exactly the original g_cdf(y). Second, its empirical CDF jumps at every knot, so $g$ is strictly increasing and every observation has positive probability. The other two can be flat between knots and give an observation zero probability.
-- **Why not `g_cdf(y/offsets)`.** Its $\hat F(t-1)$ step is the empirical CDF of $y/e + 1$, so the upper endpoint becomes $j/e + 1$ instead of $(j+1)/e$, and the results depend on the units of $e$. The estimator above does not: replacing $e$ by $ce$ gives $g_{ce}(t) = g_e(ct)$, so all results are unchanged.
+| `distribution` | $F(t^-)$ |
+|---|---|
+| `'np'` | $\frac{1}{n+1}\sum_{i} \mathbb{1}(y_i/e_i < t)$, the empirical CDF of $y/e$ |
+| `'pois'` | $\frac{1}{n}\sum_{i} P(Y_i < e_i t)$, with $Y_i \sim \text{Pois}(e_i\hat\mu)$ |
+| `'neg-bin'` | $\frac{1}{n}\sum_{i} P(Y_i < e_i t)$, with $Y_i \sim \text{NB}(\text{mean } e_i\hat\mu, \text{size } \hat r)$ |
 
-**`'pois'`, `'neg-bin'`.** These are unchanged: $g$ is the moment-matched Poisson or Negative Binomial CDF of the counts $y$. The offsets enter only through the cut points, initialization, grid and predictions.
+For `'neg-bin'`, $\text{Var}(Y_i/e_i) = \mu/e_i + \mu^2/r$, so matching moments of $y/e$ gives $\hat r = \hat\mu^2 / (\hat\sigma^2 - \hat\mu\,\overline{e^{-1}})$, where $\overline{e^{-1}} = \text{mean}(1/e)$. This requires $\hat\sigma^2 > \hat\mu\,\overline{e^{-1}}$, the variance of $y/e$ under Poisson counts. Otherwise, as in the original, a warning is given and $\hat\sigma^2$ is set to $1.21\,\hat\mu\,\overline{e^{-1}}$.
+
+The rest is unchanged: $g_0 = \Phi^{-1}(F)$ at the knots, infinite values are dropped, and the same monotone spline (`splinefun(..., method = 'monoH.FC')`) is fitted. With $e \equiv 1$, all three reduce exactly to the original `g_cdf(y)`.
+
+- **Why $y/e$.** The latent rate is known only to lie in $[y_i/e_i, (y_i+1)/e_i)$. Its lower endpoint $y/e$ gives exactly the original `g_cdf(y)` when $e \equiv 1$. Its empirical CDF also jumps at every knot, so $g$ is strictly increasing and every observation has positive probability.
+- **Why not `g_cdf(y/offsets)`.** The original $F(t-1)$ step would then use $y/e + 1$, so the upper endpoint becomes $j/e + 1$ instead of $(j+1)/e$, and the results depend on the units of $e$. With the modified `g_cdf()`, replacing $e$ by $ce$ gives $g_{ce}(t) = g_e(ct)$ for all three choices, so the fitted model does not depend on the units of $e$.
 
 **`'ispline'`** is not available with offsets. The function stops if any `offsets` or `offsets_test` differs from 1; otherwise it calls the original `bart_star_ispline()`.
 
@@ -75,9 +84,8 @@ The original rules, applied to the scale $y/e$:
 ```r
 library(countSTAR)
 source("bart_star_offset.R")
-environment(bart_star) <- asNamespace("countSTAR")   # bart_star() uses countSTAR internals
 
-fit = bart_star(y = y, X = X, offsets = e,             # e: known exposures
+fit = bart_star(y = y, X = X, offsets = e,         # e: known exposures
                 X_test = X, offsets_test = 1,
                 transformation = 'np', save_y_hat = TRUE)
 
@@ -88,16 +96,17 @@ colMeans(fit$post.fitted.values.test)  # E(y | x, e = 1): expected count per uni
 
 - `offsets`: `n x 1` vector or scalar, $e > 0$; the default is 1. `offsets_test`: `n_test x 1` vector or scalar; the default is 1. Scalars are recycled, and wrong lengths or values $\le 0$ stop with an error.
 - `post.pred`, `post.log.like.point` and the fitted values are at `offsets`. `post.pred.test`, `post.fitted.values.test` and `post.log.pred.test` are at `offsets_test`.
-- `post.mu.test` and `post.sigma` are on the scale of $z = g(y^\ast/e)$. With `'np'` they do not depend on the units of $e$. With the other transformations, they do. For example, with `'log'`, using $ce$ instead of $e$ is the same model with $\mu$ shifted by $-\log c$.
+- `post.mu.test` and `post.sigma` are on the scale of $z = g(y^\ast/e)$. With `'np'`, `'pois'` and `'neg-bin'` they do not depend on the units of $e$. With the Box-Cox family, they do. For example, with `'log'`, using $ce$ instead of $e$ is the same model with $\mu$ shifted by $-\log c$.
 
-## Code changes (relative to `bart_star()` in `STAR_Bayesian.R`)
+## Code changes (relative to `bart_star()` and `g_cdf()` in countSTAR)
 
 | Location | Change |
 |---|---|
-| Arguments | `offsets = 1, offsets_test = 1`, added last |
+| `g_cdf()` | new argument `offsets = 1`; moments, knots and $F(t^-)$ on the $y/e$ scale (see Transformation) |
+| Arguments | `offsets = 1, offsets_test = 1`, right after `y_max` |
 | Checks | recycle scalar `offsets`; length and positivity |
 | `'ispline'` | stop if offsets differ from 1; drop `offsets`, `offsets_test` before calling `bart_star_ispline()` |
-| `'np'` transformation | three lines computing $g$ above, in place of `g_cdf(y)`; `'pois'`, `'neg-bin'` unchanged |
+| CDF-based transformation | `g_cdf(y, transformation, offsets)` in place of `g_cdf(y, transformation)` |
 | Grid for `g_inv_approx()` | built from `y/offsets` and `(y + 1)/offsets` |
 | Initial `z_star`, `sigest` | divided by `offsets`; `'box-cox'` pilot only if `all(offsets == 1)` |
 | Test-set checks | recycle scalar `offsets_test`; length and positivity |
