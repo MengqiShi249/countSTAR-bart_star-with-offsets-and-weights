@@ -2,10 +2,10 @@
 
 All results and figures are produced by **`simulation_full.R`**, which sources:
 
-- `bart_star_offset.R`: `bart_star()` with the new `offsets` / `offsets_test` arguments. No `countSTAR` helper function is modified.
+- `bart_star_offset.R`: `bart_star()` with the new `offsets` / `offsets_test` arguments, and `g_cdf()` with a new `offsets` argument. No other `countSTAR` helper function is modified. The `g_cdf()` change is a correctness fix: the CDF-based transformations (`np`, `pois`, `neg-bin`) are now estimated on the $y/e$ scale on which they are applied. It is not guaranteed to improve the fit.
 - `helper_sim.R`: the three data-generating functions.
 
-`simulation_full.R` fits every scenario $\times$ transformation pair, prints the results tables, and draws the fitted-vs-truth and PPC plots. Figures are stored in `(i) data_offsets/<transformation>/` and `(ii) data_no/<transformation>/`, with identical file names across subfolders (`fr` / `im` / `ht` = friedman / imbalanced / heterogeneous).
+`simulation_full.R` fits every scenario $\times$ transformation pair, prints the results tables, and draws the fitted-vs-truth and PPC plots. Figures are stored in `(i) data_offset/<transformation>/` and `(ii) data_no/<transformation>/`, with identical file names across subfolders (`fr` / `im` / `ht` = friedman / imbalanced / heterogeneous).
 
 ## Simulation design
 
@@ -45,8 +45,8 @@ In every cell, `bart_star()` is fit twice on the **same** data: `offset = FALSE`
 | sqrt | 1551.5 | 1432.9 | −118.6 | 850.1 | 825.0 | −25.1 | 1347.9 | 1310.6 | −37.3 |
 | box-cox | 1410.4 | 1343.8 | −66.6 | 816.3 | 791.1 | −25.2 | 1300.2 | 1252.9 | −47.3 |
 | np | 1376.0 | 1312.3 | −63.8 | 792.3 | 806.0 | +13.7 | 1274.8 | 1247.4 | −27.5 |
-| pois | NaN | 1547.5 | NaN | 871.9 | 881.9 | +9.9 | 1400.9 | 1378.1 | −22.8 |
-| neg-bin | 1439.7 | 1368.3 | −71.4 | 825.3 | 857.2 | +31.9 | 1307.0 | 1295.2 | −11.7 |
+| pois | NaN | 1665.8 | NaN | 871.9 | 831.8 | −40.2 | 1400.9 | 1402.0 | +1.1 |
+| neg-bin | 1439.7 | 1378.2 | −61.5 | 825.3 | 820.3 | −5.0 | 1307.0 | 1283.7 | −23.2 |
 
 **Table 2: RMSE to truth** ($\Delta\%$ = relative change, TRUE vs. FALSE).
 
@@ -57,38 +57,39 @@ In every cell, `bart_star()` is fit twice on the **same** data: `offset = FALSE`
 | sqrt | 17.86 | 14.49 | −18.9 | 2.539 | 2.125 | −16.3 | 5.440 | 4.406 | −19.0 |
 | box-cox | 17.03 | 12.41 | −27.1 | 2.574 | 2.107 | −18.1 | 5.252 | 3.834 | −27.0 |
 | np | 15.16 | 12.36 | −18.5 | 2.509 | 2.207 | −12.0 | 5.190 | 3.816 | −26.5 |
-| pois | 16.32 | 14.91 | −8.6 | 2.557 | 2.108 | −17.6 | 5.963 | 4.958 | −16.8 |
-| neg-bin | 17.62 | 13.19 | −25.1 | 2.561 | 2.058 | −19.6 | 5.332 | 4.067 | −23.7 |
+| pois | 16.32 | 14.19 | −13.1 | 2.557 | 2.099 | −17.9 | 5.963 | 4.326 | −27.4 |
+| neg-bin | 17.62 | 13.83 | −21.5 | 2.561 | 2.073 | −19.0 | 5.332 | 4.281 | −19.7 |
 
-*Fitted vs. truth* (case i, `box-cox`):
+*Fitted vs. truth* (case i; one of `box-cox`, `log`, `np` per scenario, with its RMSE change):
 
 | | `offset = FALSE` | `offset = TRUE` |
 |---|---|---|
-| friedman | <img src="(i) data_offset/box-cox/fr-fitted-FALSE.png" width="400"> | <img src="(i) data_offset/box-cox/fr-fitted-TRUE.png" width="400"> |
-| imbalanced | <img src="(i) data_offset/box-cox/im-fitted-FALSE.png" width="400"> | <img src="(i) data_offset/box-cox/im-fitted-TRUE.png" width="400"> |
-| heterogeneous | <img src="(i) data_offset/box-cox/ht-fitted-FALSE.png" width="400"> | <img src="(i) data_offset/box-cox/ht-fitted-TRUE.png" width="400"> |
+| friedman, `box-cox` (−27.1%) | <img src="(i) data_offset/box-cox/fr-fitted-FALSE.png" width="400"> | <img src="(i) data_offset/box-cox/fr-fitted-TRUE.png" width="400"> |
+| imbalanced, `log` (−18.8%) | <img src="(i) data_offset/log/im-fitted-FALSE.png" width="400"> | <img src="(i) data_offset/log/im-fitted-TRUE.png" width="400"> |
+| heterogeneous, `np` (−26.5%) | <img src="(i) data_offset/np/ht-fitted-FALSE.png" width="400"> | <img src="(i) data_offset/np/ht-fitted-TRUE.png" width="400"> |
 
-Without the offset, the fitted means scatter widely around the 1:1 line. With the offset, they concentrate along it, and the intervals narrow for small and moderate means.
+Without the offset, the fitted means scatter widely around the 1:1 line, and in imbalanced the large true means (above about 10) are under-fitted, mostly at 3–8. With the offset, the fitted means concentrate along the line, the large means in imbalanced move towards it, and the intervals narrow for small and moderate means.
 
 **Interpretation**
 
-- **The offset improves the fitted means everywhere.** RMSE to truth falls in all 21 cells (−4.8% to −27.1%; −8.6% to −27.1% excluding `identity`). WAIC falls in 16 of the 20 finite cells.
-- **Largest gains.** `box-cox`, `log` and `neg-bin` reduce RMSE by 18–27% in every scenario, consistent with the multiplicative exposure in the data, which `log` represents exactly. `np` matches them in heterogeneous (−26.5%).
-- **Transformation matters.** The choice of $g$ affects fit as the offset does. `log`, `box-cox` and `np` give the best WAIC in every scenario, while `identity` and `pois` are the weakest. The count-based CDFs (`pois`, `neg-bin`) might worsen WAIC in the zero-heavy scenario. In practice, `log`, `box-cox` or `np` might be safer defaults.
+- **The offset improves the fitted means everywhere.** RMSE to truth falls in all 21 cells (−4.8% to −27.4%; −12.0% to −27.4% excluding `identity`). WAIC falls in 17 of the 20 finite cells.
+- **Largest gains.** `box-cox`, `log` and `neg-bin` reduce RMSE by 18–27% in every scenario, consistent with the multiplicative exposure in the data, which `log` represents exactly. `np` and `pois` match them in heterogeneous (−26.5%, −27.4%).
+- **Transformation matters.** The choice of $g$ affects fit as the offset does. `log`, `box-cox` and `np` give the best WAIC in every scenario, while `identity` and `pois` are the weakest. With the offset, the count-based CDFs (`pois`, `neg-bin`) also lower WAIC in the zero-heavy scenario (−40.2, −5.0). In practice, `log`, `box-cox` or `np` might be safer defaults.
 
 *PPC, proportion of zeros* (case i, friedman; blue line = observed 0.228):
 
 | | `offset = FALSE` | `offset = TRUE` |
 |---|---|---|
 | `np` | <img src="(i) data_offset/np/fr-PPC-FALSE.png" width="400"> | <img src="(i) data_offset/np/fr-PPC-TRUE.png" width="400"> |
-| `pois` | <img src="(i) data_offset/log/fr-PPC-FALSE.png" width="400"> | <img src="(i) data_offset/log/fr-PPC-TRUE.png" width="400"> |
+| `log` | <img src="(i) data_offset/log/fr-PPC-FALSE.png" width="400"> | <img src="(i) data_offset/log/fr-PPC-TRUE.png" width="400"> |
 | `box-cox` | <img src="(i) data_offset/box-cox/fr-PPC-FALSE.png" width="400"> | <img src="(i) data_offset/box-cox/fr-PPC-TRUE.png" width="400"> |
 
 Zero calibration is driven mainly by $g$:
 
 - `log`, `box-cox`: calibrated in all three scenarios, under both fits.
 - `np`: without the offset, friedman zeros are under-predicted (draws centred near 0.16 vs. observed 0.228). With the offset, they are well calibrated.
-- `sqrt`, `pois`: zeros are over-predicted in friedman and heterogeneous.
+- `sqrt`, `pois`: zeros are over-predicted in friedman and heterogeneous, under both fits.
+- `neg-bin`: calibrated without the offset. With the offset, zeros are over-predicted in friedman (draws centred near 0.29 vs. observed 0.228) and heterogeneous (near 0.31 vs. 0.248).
 - `identity`: the worst calibrated.
 
 ### Case (ii): `offset = TRUE` with $e \equiv 1$
