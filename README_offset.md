@@ -30,25 +30,29 @@ In the code, `a_y = a_j(y, y_max)/offsets`, `a_yp1 = a_j(y + 1, y_max)/offsets`,
 
 **Box-Cox family (`'identity'`, `'log'`, `'sqrt'`, `'box-cox'`).** $g = g_\lambda$ is applied to $y^\ast/e$. For `'box-cox'`, $\lambda$ is sampled as in the original; its likelihood uses the intervals $[a_{y_i}/e_i, a_{y_i+1}/e_i)$.
 
-**CDF-based (`'np'`, `'pois'`, `'neg-bin'`): what is estimated.** As in the original, $g = \Phi^{-1}\circ F$, but $F$ is now the marginal CDF of the latent rate $y^\ast/e$, the quantity $g$ transforms. `bart_star()` calls `g_cdf(y, transformation, offsets)`. Inside `g_cdf()`, only two steps change:
+**CDF-based (`'np'`, `'pois'`, `'neg-bin'`).** As in the original, $g = \Phi^{-1}\circ F$ at a set of knots, infinite values are dropped, and the knots are joined by the same monotone spline (`splinefun(..., method = 'monoH.FC')`). With offsets, $g$ is applied to $y^\ast/e$, so $F$ must describe $y^\ast/e$. `bart_star()` calls `g_cdf(y, transformation, offsets)`.
 
-1. **Knots** are the unique nonzero $y_i/e_i$ (originally the unique nonzero $y_i$).
-2. **$F$ is evaluated just below each knot**, $F(t^-) = n^{-1}\sum_i P(Y_i < e_i t)$. For integer counts with $e \equiv 1$, this equals the original $F(t-1)$.
+- **`'np'`**: $F$ is the empirical CDF of the observed rates $y/e$, evaluated just below each knot $t$ (the unique nonzero $y_i/e_i$):
 
-The three choices of $F$, with $\hat\mu = \text{mean}(y/e)$ and $\hat\sigma^2 = \text{var}(y/e)$:
+$$\Phi(g(t)) = \frac{1}{n+1}\sum_{i=1}^n \mathbb{1}\left(\frac{y_i}{e_i} < t\right)$$
+  
+- **`'pois'`, `'neg-bin'`**: the offsets enter through the standard count models with exposure,
 
-| `distribution` | $F(t^-)$ |
-|---|---|
-| `'np'` | $\frac{1}{n+1}\sum_{i} \mathbb{1}(y_i/e_i < t)$, the empirical CDF of $y/e$ |
-| `'pois'` | $\frac{1}{n}\sum_{i} P(Y_i < e_i t)$, with $Y_i \sim \text{Pois}(e_i\hat\mu)$ |
-| `'neg-bin'` | $\frac{1}{n}\sum_{i} P(Y_i < e_i t)$, with $Y_i \sim \text{NB}(\text{mean } e_i\hat\mu, \text{size } \hat r)$ |
+$$y_i \sim \text{Pois}(e_i\mu) \quad \text{or} \quad y_i \sim \text{NB}(\text{mean } e_i\mu, \text{size } r)$$
 
-For `'neg-bin'`, $\text{Var}(Y_i/e_i) = \mu/e_i + \mu^2/r$, so matching moments of $y/e$ gives $\hat r = \hat\mu^2 / (\hat\sigma^2 - \hat\mu\,\overline{e^{-1}})$, where $\overline{e^{-1}} = \text{mean}(1/e)$. This requires $\hat\sigma^2 > \hat\mu\,\overline{e^{-1}}$, the variance of $y/e$ under Poisson counts. Otherwise, as in the original, a warning is given and $\hat\sigma^2$ is set to $1.21\,\hat\mu\,\overline{e^{-1}}$.
-
-The rest is unchanged: $g_0 = \Phi^{-1}(F)$ at the knots, infinite values are dropped, and the same monotone spline (`splinefun(..., method = 'monoH.FC')`) is fitted. With $e \equiv 1$, all three reduce exactly to the original `g_cdf(y)`.
-
-- **Why $y/e$.** The latent rate is known only to lie in $[y_i/e_i, (y_i+1)/e_i)$. Its lower endpoint $y/e$ gives exactly the original `g_cdf(y)` when $e \equiv 1$. Its empirical CDF also jumps at every knot, so $g$ is strictly increasing and every observation has positive probability.
-- **Why not `g_cdf(y/offsets)`.** The original $F(t-1)$ step would then use $y/e + 1$, so the upper endpoint becomes $j/e + 1$ instead of $(j+1)/e$, and the results depend on the units of $e$. With the modified `g_cdf()`, replacing $e$ by $ce$ gives $g_{ce}(t) = g_e(ct)$ for all three choices, so the fitted model does not depend on the units of $e$.
+In the STAR model $z_i = g(y_i^\ast/e_i)$, and the distribution of $z_i$ does not depend on $e_i$, so $y^\ast/e$ is the latent count at unit exposure ($e = 1$). The transformation is therefore built, as in the original, from the CDF $F$ of the count at unit exposure, Pois($\mu$) or NB($\mu, r$):
+  
+$$g(t) = \Phi^{-1}(F(t - 1))$$
+  
+The offsets change only the estimates of $\mu$ and $r$, which solve the moment equations of the exposure model,
+  
+$$\sum_i y_i = \mu\sum_i e_i, \qquad s^2 = \mu\bar e + \frac{\mu^2}{r}\overline{e^2}$$
+  
+where the second is $\text{Var}(y_i) = e_i\mu + e_i^2\mu^2/r$ averaged over $i$, $s^2$ is the sample variance of $y_i - e_i\hat\mu$, $\bar e = \text{mean}(e)$ and $\overline{e^2} = \text{mean}(e^2)$. This gives
+  
+$$\hat\mu = \frac{\sum_i y_i}{\sum_i e_i}, \qquad \hat r = \frac{\hat\mu^2\overline{e^2}}{s^2 - \hat\mu\bar e}$$
+  
+$\hat\mu$ is also the Poisson MLE. With $e \equiv 1$, these are the original estimates.
 
 **`'ispline'`** is not available with offsets. The function stops if any `offsets` or `offsets_test` differs from 1; otherwise it calls the original `bart_star_ispline()`.
 
@@ -60,13 +64,13 @@ $$\tilde y_i = \lfloor g^{-1}(\tilde z_i) \cdot e_i \rfloor$$
 
 computed as `round_floor(g_inv(z_tilde) * offsets, y_max)`. Test draws (`post.pred.test`) use `offsets_test`. As in the original, $g^{-1}$ is exact for the Box-Cox family and a grid approximation (`g_inv_approx()`) for `'np'`, `'pois'` and `'neg-bin'`.
 
-**Conditional expectation.** The original `expectation_gRcpp()` is used unchanged. Only its inputs change, with the cut points divided by $e_i$:
+**Conditional expectation.** The original `expectation_gRcpp()` is used unchanged; only its inputs change:
 
-$$\mathbb{E}(y_i \mid x_i, e_i) = \sum_{j=0}^{J_i-1} j[\Phi(\frac{g(a_{j+1}/e_i) - \mu(x_i)}{\sigma}) - \Phi(\frac{g(a_j/e_i) - \mu(x_i)}{\sigma})]$$
+$$\mathbb{E}(y_i \mid x_i, e_i) = \sum_{j=0}^{J_i} j[\Phi(\frac{g(a_{j+1}/e_i) - \mu(x_i)}{\sigma}) - \Phi(\frac{g(a_j/e_i) - \mu(x_i)}{\sigma})]$$
 
-Here $J_i$ is `ceiling(round_floor(g_inv(qnorm(0.9999, mu, sigma)) * offsets, y_max))`, the 0.9999 quantile of $y_i$ at exposure $e_i$, capped at $2\max(y)$ as in the original; mass above the cap is not counted. The cut points $a_j/e_i$ differ between observations, so `expectation_gRcpp()` is called once per observation. `fitted.values` and `post.fitted.values` are at `offsets`, and `post.fitted.values.test` is at `offsets_test`. With `offsets_test = 1`, the latter is the expected count per unit exposure. With $e \equiv 1$ this is the original computation.
+Here $J_i$ is the 0.9999 quantile of $y_i$, capped at $y_{\max}$. Since $a_{y_{\max}+1} = \infty$, the term $j = y_{\max}$ is $y_{\max} P(y_i = y_{\max})$. `expectation_gRcpp()` sums up to `Jmax` $- 1$, so the code uses `Jmax` $= J_i + 1$ and the cut points `a_j(., y_max)/offsets[i]`. `post.fitted.values` is at `offsets` and `post.fitted.values.test` at `offsets_test`.
 
-**Log-predictive scores** for the test data use the intervals `[a_j(y_test)/offsets_test, a_j(y_test + 1)/offsets_test)`.
+**Log-predictive scores** for the test data use the intervals `[a_j(y_test, y_max)/offsets_test, a_j(y_test + 1, y_max)/offsets_test)`, so a test value at $y_{\max}$ has the cell $[y_{\max}/e, \infty)$, as in the likelihood.
 
 ## Initialization
 
@@ -77,7 +81,7 @@ The original rules, applied to the scale $y/e$:
 | Initial `z_star` | `g((y + abs(rnorm(n)))/offsets)` |
 | `sigest` (when `NULL`) | `sd(g((y + 1)/offsets))` |
 | `sigest`, `'box-cox'` | the original pilot MCMC if all offsets equal 1; otherwise the rule above at the initial $\lambda$, because the pilot MCMC does not take offsets |
-| Grid for `g_inv_approx()` | 250 equally spaced points on $[0, \min\{2\max(y/e),\ y_{\max}/\min(e)\}]$, plus 250 quantiles of the unique $(y+1)/e$ over $y < y_{\max}$ |
+| Grid for `g_inv_approx()` | 250 equally spaced points on $[0, \min(2\max(y/e), y_{\max}/\min(e))]$, plus 250 quantiles of the unique $(y+1)/e$ over $y < y_{\max}$ |
 
 ## Usage
 
@@ -96,13 +100,13 @@ colMeans(fit$post.fitted.values.test)  # E(y | x, e = 1): expected count per uni
 
 - `offsets`: `n x 1` vector or scalar, $e > 0$; the default is 1. `offsets_test`: `n_test x 1` vector or scalar; the default is 1. Scalars are recycled, and wrong lengths or values $\le 0$ stop with an error.
 - `post.pred`, `post.log.like.point` and the fitted values are at `offsets`. `post.pred.test`, `post.fitted.values.test` and `post.log.pred.test` are at `offsets_test`.
-- `post.mu.test` and `post.sigma` are on the scale of $z = g(y^\ast/e)$. With `'np'`, `'pois'` and `'neg-bin'` they do not depend on the units of $e$. With the Box-Cox family, they do. For example, with `'log'`, using $ce$ instead of $e$ is the same model with $\mu$ shifted by $-\log c$.
+- `post.mu.test` and `post.sigma` are on the scale of $z = g(y^\ast/e)$. With `'np'` they do not depend on the units of $e$. With `'log'`, using $ce$ instead of $e$ is the same model with $\mu$ shifted by $-\log c$. With `'pois'` and `'neg-bin'`, $g$ is the CDF transformation at $e = 1$, so the units of $e$ define the reference exposure.
 
 ## Code changes (relative to `bart_star()` and `g_cdf()` in countSTAR)
 
 | Location | Change |
 |---|---|
-| `g_cdf()` | new argument `offsets = 1`; moments, knots and $F(t^-)$ on the $y/e$ scale (see Transformation) |
+| `g_cdf()` | new argument `offsets = 1`. `'np'`: empirical CDF of $y/e$ at the knots $y/e$. `'pois'`, `'neg-bin'`: original CDF at unit exposure, with $\hat\mu$ and $\hat r$ estimated with the offsets, at integer knots (see Transformation) |
 | Arguments | `offsets = 1, offsets_test = 1`, right after `y_max` |
 | Checks | recycle scalar `offsets`; length and positivity |
 | `'ispline'` | stop if offsets differ from 1; drop `offsets`, `offsets_test` before calling `bart_star_ispline()` |
@@ -111,8 +115,8 @@ colMeans(fit$post.fitted.values.test)  # E(y | x, e = 1): expected count per uni
 | Initial `z_star`, `sigest` | divided by `offsets`; `'box-cox'` pilot only if `all(offsets == 1)` |
 | Test-set checks | recycle scalar `offsets_test`; length and positivity |
 | Cut points | `a_y`, `a_yp1` divided by `offsets` |
-| Conditional expectation | `Jmax` uses `g_inv(.) * offsets`; `expectation_gRcpp()` called per observation with `g(a_j(.)/offsets[i])` (training) and `g(a_j(.)/offsets_test[i])` (test) |
+| Conditional expectation | `Jmax` uses `g_inv(.) * offsets` and `+ 1`; `expectation_gRcpp()` called per observation with `g(a_j(., y_max)/offsets[i])` (training) and `g(a_j(., y_max)/offsets_test[i])` (test) |
 | Predictive draws | `g_inv(.) * offsets` (training), `g_inv(.) * offsets_test` (test), inside `round_floor()` |
-| Test log-scores | `a_j(.)/offsets_test` |
+| Test log-scores | `a_j(., y_max)/offsets_test` |
 
 Everything else is identical to the original: the BART update, the $\lambda$ slice sampler, the log-likelihood, the WAIC and the returned list.
