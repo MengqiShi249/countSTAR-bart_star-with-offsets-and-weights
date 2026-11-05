@@ -49,42 +49,51 @@ g_cdf = function(y, distribution = "np", offsets = 1) {
   # Number of observations:
   n = length(y)
   
-  # Moments of the raw counts (offsets: of y/e):
-  mu_y = mean(y/offsets); sigma_y = sd(y/offsets)
+  # Offsets (a scalar is recycled):
+  if(length(offsets) == 1) offsets = rep(offsets, n)
   
-  # CDFs (offsets: evaluated just below t, F_y(t) = average of P(y_i/e_i < t),
-  # which is the CDF at t - 1 when e = 1 and t is an integer):
   if(distribution == 'np') {
-    # (Scaled) empirical CDF of y/e:
+    # (Scaled) empirical CDF of y/e, evaluated just below t:
     F_y = function(t) n/(n+1)*sapply(t, function(s) mean(y/offsets < s))
-  }
-  if(distribution == 'pois'){
-    # Poisson CDF with moment-matched parameters (offsets: y_i ~ Pois(e_i*mu_y)):
-    F_y = function(t) sapply(t, function(s) mean(ppois(ceiling(round(offsets*s, 8)) - 1,
-                                                       lambda = offsets*mu_y)))
-  }
-  if(distribution == 'neg-bin') {
-    # Negative-binomial CDF with moment-matched parameters (offsets: y_i ~ NB(mean e_i*mu_y, size r),
-    # so that var(y_i/e_i) = mu_y/e_i + mu_y^2/r and r = mu_y^2/(sigma_y^2 - mu_y*mean(1/e))):
-    if(mu_y*mean(1/offsets) >= sigma_y^2){
-      # Check: underdispersion is incompatible with Negative-Binomial
-      # (offsets: r > 0 requires sigma_y^2 > mu_y*mean(1/e), the variance of y/e under Poisson counts)
-      warning("'neg-bin' not recommended for underdispersed data")
-      
-      # Force sigma_y^2 > mu_y*mean(1/e):
-      sigma_y = 1.1*sqrt(abs(mu_y*mean(1/offsets)))
+    
+    # Input points for smoothing (offsets: unique nonzero y/e):
+    t0 = sort(unique((y/offsets)[y!=0]))
+    
+    # Initial transformation:
+    g0 = qnorm(F_y(t0))
+  } else {
+    # Parametric CDFs (offsets): y_i ~ Pois(e_i*mu_y) or NB(mean e_i*mu_y, size r_y).
+    # g is applied to y*/e, the latent count at unit exposure, so F_y is the CDF at e = 1.
+    
+    # Mean (offsets: E(sum y) = mu_y*sum(e); this is also the Poisson MLE):
+    mu_y = sum(y)/sum(offsets)
+    
+    if(distribution == 'pois'){
+      # Poisson CDF with moment-matched parameters:
+      F_y = function(t) ppois(t, lambda = mu_y)
     }
-    F_y = function(t) sapply(t, function(s) mean(pnbinom(ceiling(round(offsets*s, 8)) - 1,
-                                                         size = mu_y^2/(sigma_y^2 - mu_y*mean(1/offsets)),
-                                                         mu = offsets*mu_y)))
+    if(distribution == 'neg-bin') {
+      # Negative-binomial CDF with moment-matched parameters
+      # (offsets: E(y_i - e_i*mu)^2 = e_i*mu + e_i^2*mu^2/r, averaged over i):
+      sigma2_y = sum((y - offsets*mu_y)^2)/(n - 1)
+      if(mu_y*mean(offsets) >= sigma2_y){
+        # Check: underdispersion is incompatible with Negative-Binomial
+        warning("'neg-bin' not recommended for underdispersed data")
+        
+        # Force sigma2_y > mu_y*mean(e):
+        sigma2_y = 1.21*mu_y*mean(offsets)
+      }
+      r_y = mu_y^2*mean(offsets^2)/(sigma2_y - mu_y*mean(offsets))
+      F_y = function(t) pnbinom(t, size = r_y, mu = mu_y)
+    }
+    
+    # Input points for smoothing: all integers t up to max(y, y/e). At an integer t the latent
+    # CDF is known exactly: P(y*/e < t) = P(floor(y*/e) <= t - 1) = F_y(t - 1) at unit exposure:
+    t0 = seq_len(ceiling(max(y, y/offsets)))
+    
+    # Initial transformation:
+    g0 = qnorm(F_y(t0-1))
   }
-  
-  # Input points for smoothing (offsets: unique nonzero y/e):
-  t0 = sort(unique((y/offsets)[y!=0]))
-  
-  # Initial transformation (offsets: F_y is already evaluated just below t0):
-  g0 = qnorm(F_y(t0))
-  #g0 = mu_y + sigma_y*qnorm(F_y(t0))
   
   # Make sure we have only finite values of g0 (infinite values occur for F_y = 0 or F_y = 1)
   t0 = t0[which(is.finite(g0))]; g0 = g0[which(is.finite(g0))]
@@ -196,7 +205,7 @@ g_cdf = function(y, distribution = "np", offsets = 1) {
 #'
 #' Positive offsets \code{e} (e.g., exposures) enter through the rounding operation:
 #' \code{y = floor(y*)} with \code{g(y*/e)} modeled by BART, so the cut points \code{[j, j+1)}
-#' become \code{[j/e, (j+1)/e)} and the CDF-based transformations are estimated from \code{y/e}.
+#' become \code{[j/e, (j+1)/e)}; the CDF-based transformations are estimated with the offsets (see \code{g_cdf}).
 #' Offsets are not available for 'ispline'.
 
 #' @examples
@@ -470,12 +479,12 @@ bart_star = function(y,
         # Conditional expectation (offsets: at e_i, with cut points a_j/e_i):
         if(save_y_hat){
           Jmax = ceiling(round_floor(g_inv(
-            qnorm(0.9999, mean = params$mu, sd = params$sigma))*offsets, y_max=y_max))
+            qnorm(0.9999, mean = params$mu, sd = params$sigma))*offsets, y_max=y_max)) + 1
           Jmax[Jmax > 2*max(y)] = 2*max(y) # To avoid excessive computation times, cap at 2*max(y)
           Jmaxmax = max(Jmax)
           for(i in 1:n) # offsets: the cut points a_j/e_i differ by observation
-            post.fitted.values[isave, i] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax)/offsets[i]),
-                                                             g_a_jp1 = g(a_j(1:(Jmaxmax + 1))/offsets[i]),
+            post.fitted.values[isave, i] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax, y_max = y_max)/offsets[i]),
+                                                             g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)/offsets[i]),
                                                              mu = params$mu[i], sigma = params$sigma,
                                                              Jmax = Jmax[i])
         }
@@ -488,19 +497,20 @@ bart_star = function(y,
           post.pred.test[isave,] = round_floor(g_inv(rnorm(n = n_test, mean = samp$test, sd = params$sigma))*offsets_test, y_max=y_max)
           # Conditional expectation at test points (offsets: at offsets_test, with cut points a_j/e_i):
           Jmax = ceiling(round_floor(g_inv(
-            qnorm(0.9999, mean = samp$test, sd = params$sigma))*offsets_test, y_max=y_max))
+            qnorm(0.9999, mean = samp$test, sd = params$sigma))*offsets_test, y_max=y_max)) + 1
           Jmax[Jmax > 2*max(y)] = 2*max(y) # To avoid excessive computation times, cap at 2*max(y)
           Jmaxmax = max(Jmax)
           for(i in 1:n_test) # offsets: the cut points a_j/e_i differ by observation
-            post.fitted.values.test[isave, i] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax)/offsets_test[i]),
-                                                                  g_a_jp1 = g(a_j(1:(Jmaxmax + 1))/offsets_test[i]),
+            post.fitted.values.test[isave, i] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax, y_max = y_max)/offsets_test[i]),
+                                                                  g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)/offsets_test[i]),
                                                                   mu = samp$test[i], sigma = params$sigma,
                                                                   Jmax = Jmax[i])
           
-          # Test points for log-predictive score (offsets: cut points [j/e, (j+1)/e)):
+          # Test points for log-predictive score (offsets: cut points [j/e, (j+1)/e);
+          # a_j(., y_max) gives y_test = y_max its cell [y_max/e, Inf), as for the training data):
           if(!is.null(y_test))
-            post.log.pred.test[isave,] = logLikePointRcpp(g_a_j = g(a_j(y_test)/offsets_test),
-                                                          g_a_jp1 = g(a_j(y_test + 1)/offsets_test),
+            post.log.pred.test[isave,] = logLikePointRcpp(g_a_j = g(a_j(y_test, y_max = y_max)/offsets_test),
+                                                          g_a_jp1 = g(a_j(y_test + 1, y_max = y_max)/offsets_test),
                                                           mu = samp$test,
                                                           sigma = rep(params$sigma, n_test))
         }
