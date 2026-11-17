@@ -6,6 +6,7 @@ a_j = countSTAR:::a_j
 round_floor = countSTAR:::round_floor
 g_bc = countSTAR:::g_bc; g_inv_bc = countSTAR:::g_inv_bc
 logLikePointRcpp = countSTAR:::logLikePointRcpp
+expectation_gRcpp = countSTAR:::expectation_gRcpp
 set.seed(123)
 
 # 1. g_cdf(). Data: y_i ~ Pois(3 e_i) or NB(mean 3 e_i, size 2).
@@ -48,3 +49,33 @@ for(tr in c('log', 'box-cox')){
                    E_code = fit$post.fitted.values.test[1, i], E_sim = colMeans(y_sim),
                    P_code = exp(fit$post.log.pred.test[1, i]), P_sim = colMeans(y_sim == rep(y_test[i], each = 1e5))), digits = 3)
 }
+
+# 4. Expectation for 'np' with offsets, computed over one long vector instead of a for-loop.
+# Same data as in 3. For each test point and the first saved draw (mu, sigma), post.fitted.values.test
+# should match expectation_gRcpp() called for that point alone with its cut points a_j/e.
+fit = env$bart_star(y = y, X = X, X_test = X_test, transformation = 'np', y_max = y_max,
+                    offsets = e, offsets_test = e_test, nsave = 200, nburn = 200, verbose = FALSE)
+g = env$g_cdf(y, 'np', e)
+E_loop = sapply(i, function(k) expectation_gRcpp(g(a_j(0:y_max, y_max)/e_test[k]), g(a_j(1:(y_max + 1), y_max)/e_test[k]),
+                                                 fit$post.mu.test[1, k], fit$post.sigma[1], y_max + 1))
+print(data.frame(e = e_test[i], E_code = fit$post.fitted.values.test[1, i], E_loop), digits = 4)
+
+# 5. Run time in seconds for 'np' with offsets (nburn = nsave = 500): without the fitted values,
+# with the fitted values (long vector), and with the for-loop. The for-loop time is the time
+# without the fitted values plus nsave times one pass of the loop over the n observations.
+time = NULL
+for(n in c(1000, 10000)){
+  X = matrix(runif(n*5), n); e = runif(n, 2, 20); y = rpois(n, 10*e*exp(X[,1] - 1.5))
+  t_no = system.time(env$bart_star(y = y, X = X, transformation = 'np', offsets = e,
+                                   nsave = 500, nburn = 500, verbose = FALSE))[[3]]
+  t_vec = system.time(env$bart_star(y = y, X = X, transformation = 'np', offsets = e,
+                                    nsave = 500, nburn = 500, save_y_hat = TRUE, verbose = FALSE))[[3]]
+  # One draw (mu, sigma) at the training points, for the loop:
+  fit = env$bart_star(y = y, X = X, X_test = X, transformation = 'np', offsets = e, offsets_test = e,
+                      nsave = 1, nburn = 100, verbose = FALSE)
+  g = env$g_cdf(y, 'np', e); J = 2*max(y)
+  t_loop = system.time(for(k in 1:n) expectation_gRcpp(g(a_j(0:J)/e[k]), g(a_j(1:(J + 1))/e[k]),
+                                                       fit$post.mu.test[1, k], fit$post.sigma, J))[[3]]
+  time = rbind(time, data.frame(n, no_y_hat = t_no, long_vector = t_vec, for_loop = t_no + 500*t_loop))
+}
+print(time, digits = 3)
