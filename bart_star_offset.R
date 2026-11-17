@@ -207,7 +207,7 @@ g_cdf = function(y, distribution = "np", offsets = 1) {
 #' \code{y = floor(y*)} with \code{g(y*/e)} modeled by BART, so the cut points \code{[j, j+1)}
 #' become \code{[j/e, (j+1)/e)}; the CDF-based transformations are estimated with the offsets (see \code{g_cdf}).
 #' Offsets are not available for 'ispline'.
-
+#' 
 #' @examples
 #' \donttest{
 #' # Simulate data with count-valued response y:
@@ -482,11 +482,29 @@ bart_star = function(y,
             qnorm(0.9999, mean = params$mu, sd = params$sigma))*offsets, y_max=y_max)) + 1
           Jmax[Jmax > 2*max(y)] = 2*max(y) # To avoid excessive computation times, cap at 2*max(y)
           Jmaxmax = max(Jmax)
-          for(i in 1:n) # offsets: the cut points a_j/e_i differ by observation
-            post.fitted.values[isave, i] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax, y_max = y_max)/offsets[i]),
-                                                             g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)/offsets[i]),
-                                                             mu = params$mu[i], sigma = params$sigma,
-                                                             Jmax = Jmax[i])
+          if(all(offsets == 1)){ 
+            post.fitted.values[isave,] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax, y_max = y_max)),
+                                                           g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)),
+                                                           mu = params$mu, sigma = rep(params$sigma, n),
+                                                           Jmax = Jmax)
+          } else if(transform_family == 'bc'){ # avoid using for-loop on the cut points a_j/e_i differ by observation
+            # Box-Cox: g(t/e) = e^(-lambda)*g(t) + g(1/e), so the offsets move to the mean and SD
+            post.fitted.values[isave,] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax, y_max = y_max)),
+                                                           g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)),
+                                                           mu = (params$mu - g(1/offsets))*offsets^lambda,
+                                                           sigma = params$sigma*offsets^lambda,
+                                                           Jmax = Jmax)
+          } else {
+            # CDF: the cut points g(a_j/e_i) differ by observation, so sum over one long vector
+            # of the pairs (i, j), j = Jmin_i,...,Jmax_i - 1
+            Jmin = floor(round_floor(g_inv(
+              qnorm(1 - 0.9999, mean = params$mu, sd = params$sigma))*offsets, y_max=y_max))
+            Jmin = pmin(Jmin, Jmax - 1) # (Jmax may be capped)
+            id = rep(1:n, Jmax - Jmin); j = Jmin[id] + sequence(Jmax - Jmin) - 1
+            p = pnorm(g(a_j(j + 1, y_max = y_max)/offsets[id]), mean = params$mu[id], sd = params$sigma) -
+              pnorm(g(a_j(j, y_max = y_max)/offsets[id]), mean = params$mu[id], sd = params$sigma)
+            post.fitted.values[isave,] = rowsum(j*p, id)
+          }
         }
         
         if(include_test){
@@ -500,11 +518,26 @@ bart_star = function(y,
             qnorm(0.9999, mean = samp$test, sd = params$sigma))*offsets_test, y_max=y_max)) + 1
           Jmax[Jmax > 2*max(y)] = 2*max(y) # To avoid excessive computation times, cap at 2*max(y)
           Jmaxmax = max(Jmax)
-          for(i in 1:n_test) # offsets: the cut points a_j/e_i differ by observation
-            post.fitted.values.test[isave, i] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax, y_max = y_max)/offsets_test[i]),
-                                                                  g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)/offsets_test[i]),
-                                                                  mu = samp$test[i], sigma = params$sigma,
-                                                                  Jmax = Jmax[i])
+          if(all(offsets_test == 1)){ 
+            post.fitted.values.test[isave,] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax, y_max = y_max)),
+                                                                g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)),
+                                                                mu = samp$test, sigma = rep(params$sigma, n_test),
+                                                                Jmax = Jmax)
+          } else if(transform_family == 'bc'){ # same trick as above to avoid for-loop
+            post.fitted.values.test[isave,] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax, y_max = y_max)),
+                                                                g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)),
+                                                                mu = (samp$test - g(1/offsets_test))*offsets_test^lambda,
+                                                                sigma = params$sigma*offsets_test^lambda,
+                                                                Jmax = Jmax)
+          } else {
+            Jmin = floor(round_floor(g_inv(
+              qnorm(1 - 0.9999, mean = samp$test, sd = params$sigma))*offsets_test, y_max=y_max))
+            Jmin = pmin(Jmin, Jmax - 1) # (Jmax may be capped)
+            id = rep(1:n_test, Jmax - Jmin); j = Jmin[id] + sequence(Jmax - Jmin) - 1
+            p = pnorm(g(a_j(j + 1, y_max = y_max)/offsets_test[id]), mean = samp$test[id], sd = params$sigma) -
+              pnorm(g(a_j(j, y_max = y_max)/offsets_test[id]), mean = samp$test[id], sd = params$sigma)
+            post.fitted.values.test[isave,] = rowsum(j*p, id)
+          }
           
           # Test points for log-predictive score (offsets: cut points [j/e, (j+1)/e);
           # a_j(., y_max) gives y_test = y_max its cell [y_max/e, Inf), as for the training data):
