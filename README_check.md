@@ -1,6 +1,6 @@
 # Function check
 
-`function check.R` checks each part of `bart_star_offset.R` that changed with offsets, against data simulated from the model. `_code` is the output of the component being tested; `_true` and `_sim` come from the simulated data. In every table the code agrees with the model up to simulation or estimation error, including at $y_{\max}$.
+`function check.R` checks each part of `bart_star_offset.R` that changed with offsets, against data simulated from the model. `_code` is the output of the component being tested; `_true` and `_sim` come from the simulated data. In every table the code agrees with the model up to simulation or estimation error, including at $y_{\max}$. Sections 4 and 5 check the conditional expectation without the for-loop: its values and its run time.
 
 ## 1. `g_cdf()`
 
@@ -86,3 +86,33 @@ Against: the same quantities computed from the $10^5$ counts simulated from the 
 | 19.14 | 10 | 8.216 | 8.225 | 0.4829 | 0.4859 |
 | 19.15 | 10 | 7.283 | 7.295 | 0.3168 | 0.3191 |
 | 19.42 | 10 | 7.482 | 7.472 | 0.3488 | 0.3472 |
+
+## 4. Expectation without the for-loop
+
+For the Box-Cox family, the single call to `expectation_gRcpp()` is E_code in section 3. For the CDF-based transformations, the long vector is checked here with `'np'`, on the data and test points of section 3.
+
+Tested: `post.fitted.values.test` (E_code), for the first saved draw ($\mu$, $\sigma$).
+
+Against: `expectation_gRcpp()` called for one test point at a time with its cut points $g(a_j/e)$, over all $j = 0, \dots, y_{\max}$ (E_loop).
+
+| $e$ | E_code | E_loop |
+|---|---|---|
+| 6.03 | 2.2595 | 2.2595 |
+| 7.56 | 2.1327 | 2.1327 |
+| 2.82 | 0.3616 | 0.3617 |
+| 19.14 | 6.7010 | 6.7010 |
+| 19.15 | 6.3547 | 6.3547 |
+| 19.42 | 7.6417 | 7.6417 |
+
+E_code sums $j$ only between the 0.0001 and 0.9999 quantiles of $y$, which is the difference in the third row.
+
+## 5. Run time
+
+Total run time in seconds of one `bart_star()` fit with `'np'` and offsets (`nburn = nsave = 500`), for larger counts: $y_i \sim$ Pois( $10 e_i \exp(x_{i1} - 1.5)$ ), $e_i \sim \text{Unif}(2, 20)$, means from about 4 to 121. `no_y_hat` is `save_y_hat = FALSE`. `long_vector` is `save_y_hat = TRUE`. `for_loop` is `no_y_hat` plus `nsave` times one pass of the earlier loop, with one call to `expectation_gRcpp()` per observation.
+
+| $n$ | no_y_hat | long_vector | for_loop |
+|---|---|---|---|
+| 1000 | 2.1 | 9.3 | 26.1 |
+| 10000 | 19.6 | 95.1 | 343.6 |
+
+Without the fitted values (`no_y_hat`), one iteration takes about 0.002 s ($n = 1000$) and 0.020 s ($n = 10000$) on average. With the long vector, the fitted values add about 0.014 s and 0.15 s per saved iteration, against 0.048 s and 0.65 s with the for-loop. The total run time is about 4.4 and 4.9 times that of `no_y_hat`, against about 12 and 18 times with the for-loop.
