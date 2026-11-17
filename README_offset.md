@@ -1,6 +1,6 @@
 # countSTAR: `bart_star()` with offsets
 
-This version of `bart_star()` (file `bart_star_offset.R`) adds known **offsets** (exposures) $e_i > 0$ to the BART-STAR model for counts, for example survey effort or detection proportion in point-count data. One countSTAR helper is modified: `g_cdf()` adds an `offsets` argument, and the modified version is included in `bart_star_offset.R`. All other changes are to the inputs of the existing helpers, mainly the cut points.
+This version of `bart_star()` (file `bart_star_offset.R`) adds known **offsets** (exposures) $e_i > 0$ to the BART-STAR model for counts, for example survey effort or detection proportion in point-count data. One countSTAR helper is modified: `g_cdf()` adds an `offsets` argument, and the modified version is included in `bart_star_offset.R`. All other changes are to the inputs of the existing helpers, mainly the cut points, except that the conditional expectation for the CDF-based transformations with offsets is summed in `bart_star()` itself.
 
 ## Model
 
@@ -64,11 +64,21 @@ $$\tilde y_i = \lfloor g^{-1}(\tilde z_i) \cdot e_i \rfloor$$
 
 computed as `round_floor(g_inv(z_tilde) * offsets, y_max)`. Test draws (`post.pred.test`) use `offsets_test`. As in the original, $g^{-1}$ is exact for the Box-Cox family and a grid approximation (`g_inv_approx()`) for `'np'`, `'pois'` and `'neg-bin'`.
 
-**Conditional expectation.** The original `expectation_gRcpp()` is used unchanged; only its inputs change:
+**Conditional expectation.**
 
 $$\mathbb{E}(y_i \mid x_i, e_i) = \sum_{j=0}^{J_i} j[\Phi(\frac{g(a_{j+1}/e_i) - \mu(x_i)}{\sigma}) - \Phi(\frac{g(a_j/e_i) - \mu(x_i)}{\sigma})]$$
 
-Here $J_i$ is the 0.9999 quantile of $y_i$, capped at $y_{\max}$. Since $a_{y_{\max}+1} = \infty$, the term $j = y_{\max}$ is $y_{\max} P(y_i = y_{\max})$. `expectation_gRcpp()` sums up to `Jmax` $- 1$, so the code uses `Jmax` $= J_i + 1$ and the cut points `a_j(., y_max)/offsets[i]`. `post.fitted.values` is at `offsets` and `post.fitted.values.test` at `offsets_test`.
+Here $J_i$ is the 0.9999 quantile of $y_i$, capped at $y_{\max}$. Since $a_{y_{\max}+1} = \infty$, the term $j = y_{\max}$ is $y_{\max} P(y_i = y_{\max})$. `expectation_gRcpp()` sums up to `Jmax` $- 1$, so the code uses `Jmax` $= J_i + 1$ and the cut points `a_j(., y_max)`.
+
+`expectation_gRcpp()` takes one vector of cut points for all observations, but with offsets the cut points $g(a_j/e_i)$ differ by observation. To save computation time, a loop over observations is avoided as follows. Without offsets, the original call is used. The checks of this design are in `README_check.md`.
+
+**Box-Cox family.** Since $g_\lambda(t/e_i) = e_i^{-\lambda} g_\lambda(t) + g_\lambda(1/e_i)$,
+
+$$\frac{g(a_j/e_i) - \mu(x_i)}{\sigma} = \frac{g(a_j) - m_i}{s_i}, \qquad m_i = (\mu(x_i) - g(1/e_i))e_i^\lambda, \qquad s_i = \sigma e_i^\lambda$$
+
+so `expectation_gRcpp()` is called once with the original cut points $g(a_j)$, mean $m_i$ and SD $s_i$.
+
+**CDF-based.** $g$ is a spline and has no such identity. The same sum is computed in R for all observations at once, over one long vector of the pairs $(i, j)$, $j = J_{\min,i}, \dots, J_i$, where $J_{\min,i}$ is the 0.0001 quantile of $y_i$.
 
 **Log-predictive scores** for the test data use the intervals `[a_j(y_test, y_max)/offsets_test, a_j(y_test + 1, y_max)/offsets_test)`, so a test value at $y_{\max}$ has the cell $[y_{\max}/e, \infty)$, as in the likelihood.
 
@@ -115,7 +125,7 @@ colMeans(fit$post.fitted.values.test)  # E(y | x, e = 1): expected count per uni
 | Initial `z_star`, `sigest` | divided by `offsets`; `'box-cox'` pilot only if `all(offsets == 1)` |
 | Test-set checks | recycle scalar `offsets_test`; length and positivity |
 | Cut points | `a_y`, `a_yp1` divided by `offsets` |
-| Conditional expectation | `Jmax` uses `g_inv(.) * offsets` and `+ 1`; `expectation_gRcpp()` called per observation with `g(a_j(., y_max)/offsets[i])` (training) and `g(a_j(., y_max)/offsets_test[i])` (test) |
+| Conditional expectation | `Jmax` uses `g_inv(.) * offsets` and `+ 1`; cut points `a_j(., y_max)`. With offsets, no loop over observations: Box-Cox family, one call to `expectation_gRcpp()` with `mu = (mu - g(1/offsets))*offsets^lambda` and `sigma = sigma*offsets^lambda`; CDF-based, sum over one long vector of $(i, j)$ from `Jmin` to `Jmax - 1` |
 | Predictive draws | `g_inv(.) * offsets` (training), `g_inv(.) * offsets_test` (test), inside `round_floor()` |
 | Test log-scores | `a_j(., y_max)/offsets_test` |
 
