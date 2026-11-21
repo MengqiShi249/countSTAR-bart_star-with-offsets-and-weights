@@ -1,6 +1,6 @@
 # countSTAR: `bart_star()` with offsets
 
-This version of `bart_star()` (file `bart_star_offset.R`) adds known **offsets** (exposures) $e_i > 0$ to the BART-STAR model for counts, for example survey effort or detection proportion in point-count data. One countSTAR helper is modified: `g_cdf()` adds an `offsets` argument, and the modified version is included in `bart_star_offset.R`. All other changes are to the inputs of the existing helpers, mainly the cut points, except that the conditional expectation for the CDF-based transformations with offsets is summed in `bart_star()` itself.
+This version of `bart_star()` (file `bart_star_offset.R`) adds known **offsets** (exposures) $e_i > 0$ to the BART-STAR model for counts, for example survey effort or detection proportion in point-count data. One countSTAR helper is modified: `g_cdf()` adds an `offsets` argument, and the modified version is included in `bart_star_offset.R`. All other changes are to the inputs of the existing helpers, mainly the cut points, except that the conditional expectation with offsets is summed in `bart_star()` itself.
 
 ## Model
 
@@ -35,6 +35,8 @@ In the code, `a_y = a_j(y, y_max)/offsets`, `a_yp1 = a_j(y + 1, y_max)/offsets`,
 - **`'np'`**: $F$ is the empirical CDF of the observed rates $y/e$, evaluated just below each knot $t$ (the unique nonzero $y_i/e_i$):
 
 $$\Phi(g(t)) = \frac{1}{n+1}\sum_{i=1}^n \mathbb{1}\left(\frac{y_i}{e_i} < t\right)$$
+
+It is computed with one call to `ecdf()`, as `n/(n+1)*(1 - ecdf(-y/offsets)(-t))`. With $e \equiv 1$, $y_i$ and $t$ are integers, so $\mathbb{1}(y_i < t) = \mathbb{1}(y_i \le t - 1)$ and $g$ is the original `qnorm(F_y(t0 - 1))`.
   
 - **`'pois'`, `'neg-bin'`**: the offsets enter through the standard count models with exposure,
 
@@ -70,15 +72,7 @@ $$\mathbb{E}(y_i \mid x_i, e_i) = \sum_{j=0}^{J_i} j[\Phi(\frac{g(a_{j+1}/e_i) -
 
 Here $J_i$ is the 0.9999 quantile of $y_i$, capped at $y_{\max}$. Since $a_{y_{\max}+1} = \infty$, the term $j = y_{\max}$ is $y_{\max} P(y_i = y_{\max})$. `expectation_gRcpp()` sums up to `Jmax` $- 1$, so the code uses `Jmax` $= J_i + 1$ and the cut points `a_j(., y_max)`.
 
-`expectation_gRcpp()` takes one vector of cut points for all observations, but with offsets the cut points $g(a_j/e_i)$ differ by observation. To save computation time, a loop over observations is avoided as follows. Without offsets, the original call is used. The checks of this design are in `README_check.md`.
-
-**Box-Cox family.** Since $g_\lambda(t/e_i) = e_i^{-\lambda} g_\lambda(t) + g_\lambda(1/e_i)$,
-
-$$\frac{g(a_j/e_i) - \mu(x_i)}{\sigma} = \frac{g(a_j) - m_i}{s_i}, \qquad m_i = (\mu(x_i) - g(1/e_i))e_i^\lambda, \qquad s_i = \sigma e_i^\lambda$$
-
-so `expectation_gRcpp()` is called once with the original cut points $g(a_j)$, mean $m_i$ and SD $s_i$.
-
-**CDF-based.** $g$ is a spline and has no such identity. The same sum is computed in R for all observations at once, over one long vector of the pairs $(i, j)$, $j = J_{\min,i}, \dots, J_i$, where $J_{\min,i}$ is the 0.0001 quantile of $y_i$.
+Without offsets, the original single call to `expectation_gRcpp()` is used. With offsets, the cut points $g(a_j/e_i)$ differ by observation, while `expectation_gRcpp()` takes one vector of cut points for all observations. To avoid a loop over observations, the same sum is computed in R for all observations at once, over one long vector of the pairs $(i, j)$, $j = J_{\min,i}, \dots, J_i$, where $J_{\min,i}$ is the 0.0001 quantile of $y_i$. This is used for every transformation. The checks of this design are in `README_check.md`.
 
 **Log-predictive scores** for the test data use the intervals `[a_j(y_test, y_max)/offsets_test, a_j(y_test + 1, y_max)/offsets_test)`, so a test value at $y_{\max}$ has the cell $[y_{\max}/e, \infty)$, as in the likelihood.
 
@@ -116,7 +110,7 @@ colMeans(fit$post.fitted.values.test)  # E(y | x, e = 1): expected count per uni
 
 | Location | Change |
 |---|---|
-| `g_cdf()` | new argument `offsets = 1`. `'np'`: empirical CDF of $y/e$ at the knots $y/e$. `'pois'`, `'neg-bin'`: original CDF at unit exposure, with $\hat\mu$ and $\hat r$ estimated with the offsets, at integer knots (see Transformation) |
+| `g_cdf()` | new argument `offsets = 1`. `'np'`: empirical CDF of $y/e$ strictly below the knots $y/e$, with one `ecdf()` call. `'pois'`, `'neg-bin'`: original CDF at unit exposure, with $\hat\mu$ and $\hat r$ estimated with the offsets, at integer knots (see Transformation) |
 | Arguments | `offsets = 1, offsets_test = 1`, right after `y_max` |
 | Checks | recycle scalar `offsets`; length and positivity |
 | `'ispline'` | stop if offsets differ from 1; drop `offsets`, `offsets_test` before calling `bart_star_ispline()` |
@@ -125,8 +119,9 @@ colMeans(fit$post.fitted.values.test)  # E(y | x, e = 1): expected count per uni
 | Initial `z_star`, `sigest` | divided by `offsets`; `'box-cox'` pilot only if `all(offsets == 1)` |
 | Test-set checks | recycle scalar `offsets_test`; length and positivity |
 | Cut points | `a_y`, `a_yp1` divided by `offsets` |
-| Conditional expectation | `Jmax` uses `g_inv(.) * offsets` and `+ 1`; cut points `a_j(., y_max)`. With offsets, no loop over observations: Box-Cox family, one call to `expectation_gRcpp()` with `mu = (mu - g(1/offsets))*offsets^lambda` and `sigma = sigma*offsets^lambda`; CDF-based, sum over one long vector of $(i, j)$ from `Jmin` to `Jmax - 1` |
+| Conditional expectation | `Jmax` uses `g_inv(.) * offsets` and `+ 1`; cut points `a_j(., y_max)`. Without offsets, the original call to `expectation_gRcpp()`. With offsets, for every transformation, a sum over one long vector of $(i, j)$ from `Jmin` to `Jmax - 1`, without a loop over observations |
 | Predictive draws | `g_inv(.) * offsets` (training), `g_inv(.) * offsets_test` (test), inside `round_floor()` |
 | Test log-scores | `a_j(., y_max)/offsets_test` |
 
 Everything else is identical to the original: the BART update, the $\lambda$ slice sampler, the log-likelihood, the WAIC and the returned list.
+
