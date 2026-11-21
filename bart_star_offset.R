@@ -53,8 +53,8 @@ g_cdf = function(y, distribution = "np", offsets = 1) {
   if(length(offsets) == 1) offsets = rep(offsets, n)
   
   if(distribution == 'np') {
-    # (Scaled) empirical CDF of y/e, evaluated just below t:
-    F_y = function(t) n/(n+1)*sapply(t, function(s) mean(y/offsets < s))
+    # (Scaled) empirical CDF of y/e, evaluated just below t (1 - ecdf(-x)(-t) = mean(x < t)):
+    F_y = function(t) n/(n+1)*(1 - ecdf(-y/offsets)(-t))
     
     # Input points for smoothing (offsets: unique nonzero y/e):
     t0 = sort(unique((y/offsets)[y!=0]))
@@ -487,15 +487,8 @@ bart_star = function(y,
                                                            g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)),
                                                            mu = params$mu, sigma = rep(params$sigma, n),
                                                            Jmax = Jmax)
-          } else if(transform_family == 'bc'){ # avoid using for-loop on the cut points a_j/e_i differ by observation
-            # Box-Cox: g(t/e) = e^(-lambda)*g(t) + g(1/e), so the offsets move to the mean and SD
-            post.fitted.values[isave,] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax, y_max = y_max)),
-                                                           g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)),
-                                                           mu = (params$mu - g(1/offsets))*offsets^lambda,
-                                                           sigma = params$sigma*offsets^lambda,
-                                                           Jmax = Jmax)
           } else {
-            # CDF: the cut points g(a_j/e_i) differ by observation, so sum over one long vector
+            # Offsets: the cut points g(a_j/e_i) differ by observation, so sum over one long vector
             # of the pairs (i, j), j = Jmin_i,...,Jmax_i - 1
             Jmin = floor(round_floor(g_inv(
               qnorm(1 - 0.9999, mean = params$mu, sd = params$sigma))*offsets, y_max=y_max))
@@ -522,12 +515,6 @@ bart_star = function(y,
             post.fitted.values.test[isave,] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax, y_max = y_max)),
                                                                 g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)),
                                                                 mu = samp$test, sigma = rep(params$sigma, n_test),
-                                                                Jmax = Jmax)
-          } else if(transform_family == 'bc'){ # same trick as above to avoid for-loop
-            post.fitted.values.test[isave,] = expectation_gRcpp(g_a_j = g(a_j(0:Jmaxmax, y_max = y_max)),
-                                                                g_a_jp1 = g(a_j(1:(Jmaxmax + 1), y_max = y_max)),
-                                                                mu = (samp$test - g(1/offsets_test))*offsets_test^lambda,
-                                                                sigma = params$sigma*offsets_test^lambda,
                                                                 Jmax = Jmax)
           } else {
             Jmin = floor(round_floor(g_inv(
