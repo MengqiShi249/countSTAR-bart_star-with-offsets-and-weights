@@ -1,9 +1,12 @@
 library(countSTAR)
+# Updated package files (bart_star() and g_cdf() with offsets); all other functions are from countSTAR:
+path = "(replace with your folder path)"
 env = new.env(parent = asNamespace("countSTAR"))
-sys.source("/Users/shimengqi/Desktop/Courses/0-research/BART-STAR/offset/bart_star_offset.R", envir = env)
+sys.source(paste0(path, "helper_functions.R"), envir = env)
+sys.source(paste0(path, "STAR_Bayesian.R"), envir = env)
 bart_star = env$bart_star   # uses the offset g_cdf(), plus countSTAR internals
 g_cdf = env$g_cdf           # only if you call g_cdf() directly
-source("/Users/shimengqi/Desktop/Courses/0-research/BART-STAR/offset/helper_sim.R")
+source(paste0(path, "helper_simulation.R"))
 set.seed(123)
 
 n = 250; p = 6
