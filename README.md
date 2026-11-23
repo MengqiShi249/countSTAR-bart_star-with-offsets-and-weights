@@ -2,8 +2,8 @@
 
 All results and figures are produced by **`simulation_full.R`**, which sources:
 
-- `bart_star_offset.R`: `bart_star()` with the new `offsets` / `offsets_test` arguments, and `g_cdf()` with a new `offsets` argument. No other `countSTAR` helper function is modified. The `g_cdf()` change is a correctness fix: the CDF-based transformations (`np`, `pois`, `neg-bin`) are now estimated on the $y/e$ scale on which they are applied. It is not guaranteed to improve the fit.
-- `helper_sim.R`: the three data-generating functions.
+- `STAR_Bayesian.R` and `helper_functions.R`: the `countSTAR` package files with the changes, sourced on top of the installed `countSTAR`. `bart_star()` has the new `offsets` / `offsets_test` arguments, and `g_cdf()` has a new `offsets` argument. The `g_cdf()` change is a correctness fix: the CDF-based transformations (`np`, `pois`, `neg-bin`) are now estimated on the $y/e$ scale on which they are applied. It is not guaranteed to improve the fit. The only other change, in `genMCMC_star()`, corrects the fitted values when `y_max` is finite and does not affect these results.
+- `helper_simulation.R`: the three data-generating functions with offsets.
 
 `simulation_full.R` fits every scenario $\times$ transformation pair, prints the results tables, and draws the fitted-vs-truth and PPC plots. Figures are stored in `(i) data_offset/<transformation>/` and `(ii) data_no/<transformation>/`, with identical file names across subfolders (`fr` / `im` / `ht` = friedman / imbalanced / heterogeneous).
 
