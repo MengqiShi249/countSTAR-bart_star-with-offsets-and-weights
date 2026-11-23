@@ -1,6 +1,6 @@
 # Function check
 
-`function check.R` checks each part of `bart_star_offset.R` that changed with offsets, against data simulated from the model. `_code` is the output of the component being tested; `_true` and `_sim` come from the simulated data. In every table the code agrees with the model up to simulation or estimation error, including at $y_{\max}$. Sections 4 and 5 check the conditional expectation computed over one long vector instead of a for-loop: its values and its run time.
+`function check.R` checks each part of `bart_star()` (in `STAR_Bayesian.R`) and `g_cdf()` (in `helper_functions.R`) that changed with offsets, against data simulated from the model. `_code` is the output of the component being tested; `_true` and `_sim` come from the simulated data. In every table the code agrees with the model up to simulation or estimation error, including at $y_{\max}$. Sections 4 and 5 check the conditional expectation computed over one long vector instead of a for-loop: its values and its run time.
 
 ## 1. `g_cdf()`
 
@@ -63,7 +63,7 @@ Against: frequencies of $y = \min(\lfloor e g^{-1}(z) \rfloor, y_{\max})$, $z \s
 
 These are computed inside `bart_star()`, so a short fit is run ($y_{\max} = 10$) and one saved draw ($\mu$, $\sigma$, $\lambda$) is used. Each row is one simulated test point (only show 6 out of 100 generated points). `e` is its offset, and $y_\text{test}$ is the observed count
 
-Tested: `post.fitted.values.test` (E_code, from the long vector) and `exp(post.log.pred.test)` (P_code), i.e. $E(y\mid \mu, \sigma, e)$ and $P(y = y_\text{test}\mid \mu,\sigma, e)$ from `bart_star_offset` code. 
+Tested: `post.fitted.values.test` (E_code, from the long vector) and `exp(post.log.pred.test)` (P_code), i.e. $E(y\mid \mu, \sigma, e)$ and $P(y = y_\text{test}\mid \mu,\sigma, e)$ from `bart_star()`. 
 
 Against: the same quantities computed from the $10^5$ counts simulated from the same $\mu$, $\sigma$, $\lambda$, i.e. their mean (E_sim) and the frequency of $y_\text{test}$ (P_sim).
 
@@ -114,9 +114,9 @@ Total run time in seconds of one `bart_star()` fit with offsets (`nburn = nsave 
 
 | $n$ | $g$ | no_y_hat | long_vector | for_loop |
 |---|---|---|---|---|
-| 1000 | np | 2.19 | 8.61 | 23.7 |
-| 1000 | box-cox | 1.50 | 3.82 | 10.5 |
-| 10000 | np | 19.59 | 95.85 | 349.6 |
-| 10000 | box-cox | 13.54 | 38.65 | 118.0 |
+| 1000 | np | 2.20 | 8.95 | 24.2 |
+| 1000 | box-cox | 1.49 | 3.88 | 10.5 |
+| 10000 | np | 20.81 | 100.41 | 335.8 |
+| 10000 | box-cox | 13.21 | 40.39 | 128.2 |
 
-With the long vector, the total run time is about 3.9 (`'np'`) and 2.5 (`'box-cox'`) times that of `no_y_hat` at $n = 1000$, and 4.9 and 2.9 times at $n = 10000$, against 7 to 18 times with the for-loop.
+With the long vector, the total run time is about 4.1 (`'np'`) and 2.6 (`'box-cox'`) times that of `no_y_hat` at $n = 1000$, and 4.8 and 3.1 times at $n = 10000$, against 7 to 16 times with the for-loop.
