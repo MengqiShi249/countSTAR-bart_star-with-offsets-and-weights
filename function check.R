@@ -1,7 +1,10 @@
 library(countSTAR)
 library(dbarts)
+# Updated package files (bart_star() and g_cdf() with offsets); all other functions are from countSTAR:
+path = "(replace with your folder path)"
 env = new.env(parent = asNamespace("countSTAR"))
-sys.source("/Users/shimengqi/Desktop/Courses/0-research/BART-STAR/offset/bart_star_offset.R", envir = env)
+sys.source(paste0(path, "helper_functions.R"), envir = env)
+sys.source(paste0(path, "STAR_Bayesian.R"), envir = env)
 a_j = countSTAR:::a_j
 round_floor = countSTAR:::round_floor
 g_bc = countSTAR:::g_bc; g_inv_bc = countSTAR:::g_inv_bc
