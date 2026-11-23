@@ -1,6 +1,6 @@
 # countSTAR: `bart_star()` with offsets
 
-This version of `bart_star()` (file `bart_star_offset.R`) adds known **offsets** (exposures) $e_i > 0$ to the BART-STAR model for counts, for example survey effort or detection proportion in point-count data. One countSTAR helper is modified: `g_cdf()` adds an `offsets` argument, and the modified version is included in `bart_star_offset.R`. All other changes are to the inputs of the existing helpers, mainly the cut points, except that the conditional expectation with offsets is summed in `bart_star()` itself.
+This version of `bart_star()` (in `STAR_Bayesian.R`) adds known **offsets** (exposures) $e_i > 0$ to the BART-STAR model for counts, for example survey effort or detection proportion in point-count data. One countSTAR helper is modified: `g_cdf()` adds an `offsets` argument, and the modified version is in `helper_functions.R`. All other changes are to the inputs of the existing helpers, mainly the cut points, except that the conditional expectation with offsets is summed in `bart_star()` itself.
 
 ## Model
 
@@ -91,7 +91,10 @@ The original rules, applied to the scale $y/e$:
 
 ```r
 library(countSTAR)
-source("bart_star_offset.R")
+env = new.env(parent = asNamespace("countSTAR"))
+sys.source("helper_functions.R", envir = env)  # g_cdf() with offsets
+sys.source("STAR_Bayesian.R", envir = env)    # bart_star() with offsets
+bart_star = env$bart_star
 
 fit = bart_star(y = y, X = X, offsets = e,         # e: known exposures
                 X_test = X, offsets_test = 1,
